@@ -46,9 +46,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         tvOrientation = findViewById(R.id.tvOrientation)
 
         mjpegServer = MjpegHttpServer(PORT)
-        cameraManager = CameraStreamManager(this, mjpegServer) { fps ->
-            runOnUiThread { tvFps.text = "FPS: $fps" }
-        }
+        cameraManager = CameraStreamManager(this, mjpegServer,
+            onFpsUpdate = { fps ->
+                runOnUiThread { tvFps.text = "FPS: $fps" }
+            },
+            onErrorMessage = { msg ->
+                runOnUiThread {
+                    tvStatus.text = "❌ $msg"
+                    tvStatus.setTextColor(ContextCompat.getColor(this, android.R.color.holo_red_dark))
+                }
+            }
+        )
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
