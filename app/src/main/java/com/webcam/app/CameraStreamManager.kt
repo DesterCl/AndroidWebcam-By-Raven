@@ -11,7 +11,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Range
-import android.view.Surface
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
@@ -42,8 +41,7 @@ class CameraStreamManager(
     private var maxAfRegions = 0
     private var maxAeRegions = 0
     private var supportedFpsRanges: Array<Range<Int>>? = null
-    private var dummyTexture: android.graphics.SurfaceTexture? = null
-    private var dummySurface: Surface? = null
+    private var dummyReader: ImageReader? = null
 
     fun setDeviceRotation(rotation: Int) {
         currentRotation = rotation
@@ -97,18 +95,20 @@ class CameraStreamManager(
 
         // Algunos HAL de cámara (MediaTek y otros) requieren un stream adicional
         // tipo "preview" además de la salida JPEG, o fallan con ERROR_CAMERA_DEVICE.
-        // Creamos una superficie dummy que no se usa ni se muestra en pantalla.
-        val previewSizes = map.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+        // Usamos un ImageReader YUV de baja resolución cuyos frames se descartan
+        // inmediatamente (para que el buffer no se llene y la cámara no rechace capturas).
+        val previewSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
         val previewSize = previewSizes
-            ?.filter { it.width <= 1280 && it.height <= 720 }
+            ?.filter { it.width <= 640 && it.height <= 480 }
             ?.maxByOrNull { it.width.toLong() * it.height }
             ?: previewSizes?.minByOrNull { it.width.toLong() * it.height }
         val pWidth = previewSize?.width ?: 640
         val pHeight = previewSize?.height ?: 480
-        dummyTexture = android.graphics.SurfaceTexture(false).apply {
-            setDefaultBufferSize(pWidth, pHeight)
+        dummyReader = ImageReader.newInstance(pWidth, pHeight, ImageFormat.YUV_420_888, 3).apply {
+            setOnImageAvailableListener({ reader ->
+                try { reader.acquireLatestImage()?.close() } catch (e: Exception) { }
+            }, captureHandler)
         }
-        dummySurface = Surface(dummyTexture)
 
         cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
@@ -168,14 +168,14 @@ class CameraStreamManager(
 
     private fun createCaptureSession(camera: CameraDevice) {
         try {
-            val targets = listOfNotNull(imageReader!!.surface, dummySurface)
+            val targets = listOfNotNull(imageReader!!.surface, dummyReader?.surface)
             camera.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     try {
                         captureRequestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                             addTarget(imageReader!!.surface)
-                            dummySurface?.let { addTarget(it) }
+                            dummyReader?.surface?.let { addTarget(it) }
                             // FPS - usar un rango realmente soportado por el dispositivo
                             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, pickBestFpsRange())
                             // Auto exposición
@@ -285,8 +285,7 @@ class CameraStreamManager(
             captureSession?.close(); captureSession = null
             cameraDevice?.close(); cameraDevice = null
             imageReader?.close(); imageReader = null
-            dummySurface?.release(); dummySurface = null
-            dummyTexture?.release(); dummyTexture = null
+            dummyReader?.close(); dummyReader = null
             captureRequestBuilder = null
         } catch (e: Exception) {
             Log.e("Camera", "Error deteniendo: ${e.message}")
