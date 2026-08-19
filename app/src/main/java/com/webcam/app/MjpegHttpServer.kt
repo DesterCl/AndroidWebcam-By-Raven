@@ -38,7 +38,14 @@ class MjpegHttpServer(private val port: Int) {
         serverSocket = null
     }
 
+    private var lastFrameTime = 0L
+
     fun updateFrame(jpegBytes: ByteArray) {
+        // Limitar a 30fps máximo para no saturar la red
+        val now = System.currentTimeMillis()
+        if (now - lastFrameTime < 33) return
+        lastFrameTime = now
+
         latestFrame.set(jpegBytes)
         clients.removeAll { it.disconnected }
         clients.forEach { it.sendFrame(jpegBytes) }
