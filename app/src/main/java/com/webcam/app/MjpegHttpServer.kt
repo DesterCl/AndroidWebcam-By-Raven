@@ -69,7 +69,7 @@ class MjpegHttpServer(private val port: Int) {
         private fun serveStream() {
             val out = output ?: return
             val boundary = "mjpegboundary"
-            out.write("HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=$boundary\r\nCache-Control: no-cache\r\n\r\n")
+            out.write("HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=$boundary\r\nCache-Control: no-cache\r\n\r\n".toByteArray(Charsets.UTF_8))
             out.flush()
             latestFrame.get()?.let { sendFrame(it) }
         }
@@ -79,9 +79,9 @@ class MjpegHttpServer(private val port: Int) {
             try {
                 val out = output ?: return
                 val header = "--mjpegboundary\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegBytes.size}\r\n\r\n"
-                out.write(header.toByteArray())
+                out.write(header.toByteArray(Charsets.UTF_8))
                 out.write(jpegBytes)
-                out.write("\r\n".toByteArray())
+                out.write("\r\n".toByteArray(Charsets.UTF_8))
                 out.flush()
             } catch (e: Exception) { disconnected = true }
         }
@@ -90,10 +90,10 @@ class MjpegHttpServer(private val port: Int) {
             val out = output ?: return
             val frame = latestFrame.get()
             if (frame != null) {
-                out.write("HTTP/1.0 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n".toByteArray())
+                out.write("HTTP/1.0 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
                 out.write(frame)
             } else {
-                out.write("HTTP/1.0 503 Service Unavailable\r\n\r\n".toByteArray())
+                out.write("HTTP/1.0 503 Service Unavailable\r\n\r\n".toByteArray(Charsets.UTF_8))
             }
             out.flush()
         }
@@ -103,7 +103,7 @@ class MjpegHttpServer(private val port: Int) {
             val html = """<!DOCTYPE html><html><head><title>AndroidWebcam</title>
 <style>body{margin:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;color:#fff;font-family:sans-serif}img{max-width:100%;max-height:90vh}a{color:#4af;margin-top:10px}</style>
 </head><body><img src="/video"/><a href="/snapshot">📸 Capturar foto</a></body></html>"""
-            out.write("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.length}\r\n\r\n$html".toByteArray())
+            out.write("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${html.length}\r\n\r\n$html".toByteArray(Charsets.UTF_8))
             out.flush()
         }
 
