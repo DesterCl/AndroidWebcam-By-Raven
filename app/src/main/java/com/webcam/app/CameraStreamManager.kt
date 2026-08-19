@@ -41,7 +41,15 @@ class CameraStreamManager(
     private var maxAfRegions = 0
     private var maxAeRegions = 0
     private var supportedFpsRanges: Array<Range<Int>>? = null
+    private var availableStabModes: IntArray? = null
     private var dummyReader: ImageReader? = null
+
+    // Parámetros de la sesión actual (se guardan para poder reintentar en "modo seguro")
+    private var lastWidth = 1280
+    private var lastHeight = 720
+    private var lastCameraId: String? = null
+    private var safeModeActive = false
+    private var restartAttempted = false
 
     fun setDeviceRotation(rotation: Int) {
         currentRotation = rotation
