@@ -65,12 +65,30 @@ class CameraStreamManager(
             ?: ranges.maxByOrNull { it.upper } ?: Range(24, 30)
     }
 
+    private fun pickSafestFpsRange(): Range<Int> {
+        // En modo seguro preferimos el rango más "ancho" (más tolerante para el HAL),
+        // en vez del más ajustado a 30fps.
+        val ranges = supportedFpsRanges
+        if (ranges.isNullOrEmpty()) return Range(15, 30)
+        return ranges.maxByOrNull { it.upper - it.lower } ?: Range(15, 30)
+    }
+
     @SuppressLint("MissingPermission")
     fun startCamera(width: Int, height: Int, useFrontCamera: Boolean) {
+        safeModeActive = false
+        restartAttempted = false
+        lastWidth = width
+        lastHeight = height
         isFrontCamera = useFrontCamera
+        openAndConfigure(width, height, useFrontCamera, safeMode = false)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun openAndConfigure(width: Int, height: Int, useFrontCamera: Boolean, safeMode: Boolean) {
         val cameraId = getCameraId(useFrontCamera) ?: run {
             Log.e("Camera", "No se encontró cámara"); onErrorMessage("No se encontró cámara"); return
         }
+        lastCameraId = cameraId
 
         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: run {
@@ -81,6 +99,7 @@ class CameraStreamManager(
         maxAfRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
         maxAeRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
         supportedFpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        availableStabModes = characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
 
         val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
         val bestSize = supportedSizes
@@ -89,7 +108,7 @@ class CameraStreamManager(
             ?: supportedSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
             ?: return
 
-        Log.d("Camera", "Resolución: ${bestSize.width}x${bestSize.height}, sensor: $sensorOrientation°")
+        Log.d("Camera", "Resolución: ${bestSize.width}x${bestSize.height}, sensor: $sensorOrientation°, safeMode=$safeMode")
 
         imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.JPEG, 2)
         imageReader!!.setOnImageAvailableListener({ reader ->
@@ -105,23 +124,31 @@ class CameraStreamManager(
         // tipo "preview" además de la salida JPEG, o fallan con ERROR_CAMERA_DEVICE.
         // Usamos un ImageReader YUV de baja resolución cuyos frames se descartan
         // inmediatamente (para que el buffer no se llene y la cámara no rechace capturas).
-        val previewSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
-        val previewSize = previewSizes
-            ?.filter { it.width <= 640 && it.height <= 480 }
-            ?.maxByOrNull { it.width.toLong() * it.height }
-            ?: previewSizes?.minByOrNull { it.width.toLong() * it.height }
-        val pWidth = previewSize?.width ?: 640
-        val pHeight = previewSize?.height ?: 480
-        dummyReader = ImageReader.newInstance(pWidth, pHeight, ImageFormat.YUV_420_888, 3).apply {
-            setOnImageAvailableListener({ reader ->
-                try { reader.acquireLatestImage()?.close() } catch (e: Exception) { }
-            }, captureHandler)
+        // En "modo seguro" NO se agrega este stream extra, porque en algunos
+        // dispositivos es precisamente esta combinación la que provoca
+        // "reason=0" en cada captura tras una actualización de firmware/Android.
+        dummyReader = null
+        if (!safeMode) {
+            val previewSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
+            if (!previewSizes.isNullOrEmpty()) {
+                val previewSize = previewSizes
+                    .filter { it.width <= 640 && it.height <= 480 }
+                    .maxByOrNull { it.width.toLong() * it.height }
+                    ?: previewSizes.minByOrNull { it.width.toLong() * it.height }
+                if (previewSize != null) {
+                    dummyReader = ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 3).apply {
+                        setOnImageAvailableListener({ reader ->
+                            try { reader.acquireLatestImage()?.close() } catch (e: Exception) { }
+                        }, captureHandler)
+                    }
+                }
+            }
         }
 
         cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 cameraDevice = camera
-                createCaptureSession(camera)
+                createCaptureSession(camera, safeMode)
             }
             override fun onDisconnected(camera: CameraDevice) { camera.close() }
             override fun onError(camera: CameraDevice, error: Int) {
@@ -174,53 +201,69 @@ class CameraStreamManager(
         } catch (e: Exception) { jpegBytes }
     }
 
-    private fun createCaptureSession(camera: CameraDevice) {
+    private fun createCaptureSession(camera: CameraDevice, safeMode: Boolean) {
         try {
             val targets = listOfNotNull(imageReader!!.surface, dummyReader?.surface)
             camera.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     try {
-                        captureRequestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                        val template = if (safeMode) CameraDevice.TEMPLATE_PREVIEW else CameraDevice.TEMPLATE_RECORD
+                        captureRequestBuilder = camera.createCaptureRequest(template).apply {
                             addTarget(imageReader!!.surface)
                             dummyReader?.surface?.let { addTarget(it) }
                             // FPS - usar un rango realmente soportado por el dispositivo
-                            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, pickBestFpsRange())
+                            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, if (safeMode) pickSafestFpsRange() else pickBestFpsRange())
                             // Auto exposición
                             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                             // Balance de blancos automático
                             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
                             // AF continuo para video — reenfoca solo constantemente
                             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                            // Zona de enfoque/exposición: centro del sensor (coordenadas reales, no negativas)
-                            // Solo se configura si el dispositivo realmente soporta regiones de AF/AE
-                            activeArraySize?.let { rect ->
-                                val cx = rect.width() / 2
-                                val cy = rect.height() / 2
-                                val half = minOf(rect.width(), rect.height()) / 6
-                                val meteringRect = MeteringRectangle(
-                                    (cx - half).coerceAtLeast(0),
-                                    (cy - half).coerceAtLeast(0),
-                                    half * 2,
-                                    half * 2,
-                                    MeteringRectangle.METERING_WEIGHT_MAX
-                                )
-                                if (maxAfRegions > 0) {
-                                    set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(meteringRect))
-                                }
-                                if (maxAeRegions > 0) {
-                                    set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(meteringRect))
+
+                            if (!safeMode) {
+                                // Zona de enfoque/exposición: centro del sensor (coordenadas reales, no negativas)
+                                // Solo se configura si el dispositivo realmente soporta regiones de AF/AE
+                                activeArraySize?.let { rect ->
+                                    val cx = rect.width() / 2
+                                    val cy = rect.height() / 2
+                                    val half = minOf(rect.width(), rect.height()) / 6
+                                    val meteringRect = MeteringRectangle(
+                                        (cx - half).coerceAtLeast(0),
+                                        (cy - half).coerceAtLeast(0),
+                                        half * 2,
+                                        half * 2,
+                                        MeteringRectangle.METERING_WEIGHT_MAX
+                                    )
+                                    if (maxAfRegions > 0) {
+                                        set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(meteringRect))
+                                    }
+                                    if (maxAeRegions > 0) {
+                                        set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(meteringRect))
+                                    }
                                 }
                             }
                             // Calidad
                             set(CaptureRequest.JPEG_QUALITY, 92.toByte())
                             set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
                             set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
-                            // Estabilización
-                            set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+                            // Estabilización — solo si el dispositivo la soporta y no estamos en modo seguro.
+                            // Forzarla sin comprobar soporte es una causa común de que el HAL rechace
+                            // cada captura con "reason=0" tras actualizaciones de firmware/Android.
+                            val stabSupported = availableStabModes?.contains(
+                                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                            ) == true
+                            if (!safeMode && stabSupported) {
+                                set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+                            }
                         }
 
+                        captureFailCount = 0
                         session.setRepeatingRequest(captureRequestBuilder!!.build(), afCallback, captureHandler)
+
+                        if (safeMode) {
+                            onErrorMessage("⚠️ Modo compatibilidad activado (algunos ajustes de cámara se desactivaron)")
+                        }
                     } catch (e: Exception) {
                         Log.e("Camera", "Error request: ${e.message}")
                         onErrorMessage("Error al iniciar captura: ${e.message}")
@@ -228,7 +271,12 @@ class CameraStreamManager(
                 }
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     Log.e("Camera", "Sesión fallida")
-                    onErrorMessage("No se pudo configurar la sesión de cámara")
+                    if (!safeMode && !restartAttempted) {
+                        restartAttempted = true
+                        retryInSafeMode()
+                    } else {
+                        onErrorMessage("No se pudo configurar la sesión de cámara")
+                    }
                 }
             }, captureHandler)
         } catch (e: Exception) {
@@ -239,10 +287,13 @@ class CameraStreamManager(
 
     // Callback que monitorea fallos de captura por request (p. ej. rango de FPS no soportado)
     private var captureFailCount = 0
+    private val SAFE_MODE_THRESHOLD = 4 // fallos consecutivos antes de reintentar en modo seguro
 
     // Callback que monitorea el estado del AF y fuerza re-enfoque si se pierde
     private val afCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            // Cualquier captura exitosa resetea el contador de fallos
+            captureFailCount = 0
             val newAfState = result.get(CaptureResult.CONTROL_AF_STATE) ?: return
             if (newAfState != afState) {
                 afState = newAfState
@@ -257,9 +308,31 @@ class CameraStreamManager(
         override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
             captureFailCount++
             Log.e("Camera", "Captura fallida (reason=${failure.reason}), total: $captureFailCount")
-            if (captureFailCount == 1) {
+            if (captureFailCount == 1 && !safeModeActive) {
                 onErrorMessage("La cámara rechaza los parámetros de captura (reason=${failure.reason})")
             }
+            if (captureFailCount >= SAFE_MODE_THRESHOLD && !safeModeActive && !restartAttempted) {
+                restartAttempted = true
+                retryInSafeMode()
+            }
+        }
+    }
+
+    // Reintenta la sesión de cámara quitando todos los ajustes "opcionales" que
+    // pueden no ser soportados por el HAL en la combinación actual de streams:
+    // sin stream YUV extra, sin regiones AF/AE, sin estabilización, plantilla PREVIEW.
+    private fun retryInSafeMode() {
+        Log.d("Camera", "Reintentando en modo seguro")
+        captureHandler.post {
+            try {
+                captureSession?.close(); captureSession = null
+                cameraDevice?.close(); cameraDevice = null
+                imageReader?.close(); imageReader = null
+                dummyReader?.close(); dummyReader = null
+            } catch (e: Exception) { }
+            safeModeActive = true
+            captureFailCount = 0
+            openAndConfigure(lastWidth, lastHeight, isFrontCamera, safeMode = true)
         }
     }
 
