@@ -17,7 +17,8 @@ import java.nio.ByteBuffer
 class CameraStreamManager(
     private val context: Context,
     private val server: MjpegHttpServer,
-    private val onFpsUpdate: (Int) -> Unit
+    private val onFpsUpdate: (Int) -> Unit,
+    private val onErrorMessage: (String) -> Unit = {}
 ) {
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -37,22 +38,40 @@ class CameraStreamManager(
     private var captureRequestBuilder: CaptureRequest.Builder? = null
     private var afState = 0
     private var activeArraySize: Rect? = null
+    private var maxAfRegions = 0
+    private var maxAeRegions = 0
+    private var supportedFpsRanges: Array<Range<Int>>? = null
 
     fun setDeviceRotation(rotation: Int) {
         currentRotation = rotation
+    }
+
+    private fun pickBestFpsRange(): Range<Int> {
+        val ranges = supportedFpsRanges
+        if (ranges.isNullOrEmpty()) return Range(24, 30)
+        // Preferir un rango que cubra 30fps, priorizando el más "ajustado" (menor span)
+        return ranges
+            .filter { it.upper in 24..60 }
+            .minByOrNull { (it.upper - it.lower) + Math.abs(30 - it.upper) }
+            ?: ranges.maxByOrNull { it.upper } ?: Range(24, 30)
     }
 
     @SuppressLint("MissingPermission")
     fun startCamera(width: Int, height: Int, useFrontCamera: Boolean) {
         isFrontCamera = useFrontCamera
         val cameraId = getCameraId(useFrontCamera) ?: run {
-            Log.e("Camera", "No se encontró cámara"); return
+            Log.e("Camera", "No se encontró cámara"); onErrorMessage("No se encontró cámara"); return
         }
 
         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: run {
+            onErrorMessage("No se pudo leer config. de cámara"); return
+        }
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         activeArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        maxAfRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
+        maxAeRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
+        supportedFpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
 
         val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
         val bestSize = supportedSizes
@@ -80,7 +99,7 @@ class CameraStreamManager(
             }
             override fun onDisconnected(camera: CameraDevice) { camera.close() }
             override fun onError(camera: CameraDevice, error: Int) {
-                Log.e("Camera", "Error: $error"); camera.close()
+                Log.e("Camera", "Error: $error"); onErrorMessage("Error cámara: código $error"); camera.close()
             }
         }, captureHandler)
     }
@@ -121,116 +140,4 @@ class CameraStreamManager(
                 postRotate(rotation.toFloat())
                 if (isFront) postScale(-1f, 1f)
             }
-            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
-            val out = ByteArrayOutputStream()
-            rotated.compress(Bitmap.CompressFormat.JPEG, 92, out)
-            bitmap.recycle(); rotated.recycle()
-            out.toByteArray()
-        } catch (e: Exception) { jpegBytes }
-    }
-
-    private fun createCaptureSession(camera: CameraDevice) {
-        try {
-            camera.createCaptureSession(listOf(imageReader!!.surface), object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    captureSession = session
-                    try {
-                        captureRequestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                            addTarget(imageReader!!.surface)
-                            // FPS
-                            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
-                            // Auto exposición
-                            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                            // Balance de blancos automático
-                            set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-                            // AF continuo para video — reenfoca solo constantemente
-                            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                            // Zona de enfoque/exposición: centro del sensor (coordenadas reales, no negativas)
-                            activeArraySize?.let { rect ->
-                                val cx = rect.width() / 2
-                                val cy = rect.height() / 2
-                                val half = minOf(rect.width(), rect.height()) / 6
-                                val meteringRect = MeteringRectangle(
-                                    (cx - half).coerceAtLeast(0),
-                                    (cy - half).coerceAtLeast(0),
-                                    half * 2,
-                                    half * 2,
-                                    MeteringRectangle.METERING_WEIGHT_MAX
-                                )
-                                set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(meteringRect))
-                                set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(meteringRect))
-                            }
-                            // Calidad
-                            set(CaptureRequest.JPEG_QUALITY, 92.toByte())
-                            set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
-                            set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
-                            // Estabilización
-                            set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
-                        }
-
-                        session.setRepeatingRequest(captureRequestBuilder!!.build(), afCallback, captureHandler)
-                    } catch (e: Exception) {
-                        Log.e("Camera", "Error request: ${e.message}")
-                    }
-                }
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    Log.e("Camera", "Sesión fallida")
-                }
-            }, captureHandler)
-        } catch (e: Exception) {
-            Log.e("Camera", "Error sesión: ${e.message}")
-        }
-    }
-
-    // Callback que monitorea el estado del AF y fuerza re-enfoque si se pierde
-    private val afCallback = object : CameraCaptureSession.CaptureCallback() {
-        override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
-            val newAfState = result.get(CaptureResult.CONTROL_AF_STATE) ?: return
-            if (newAfState != afState) {
-                afState = newAfState
-                when (newAfState) {
-                    CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED -> {
-                        // Si el AF quedó bloqueado sin enfocar, forzar nuevo ciclo
-                        triggerAutoFocus()
-                    }
-                }
-            }
-        }
-    }
-
-    private fun triggerAutoFocus() {
-        val session = captureSession ?: return
-        val builder = captureRequestBuilder ?: return
-        try {
-            // Disparar AF
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-            session.capture(builder.build(), null, captureHandler)
-            // Volver a modo continuo
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
-            session.setRepeatingRequest(builder.build(), afCallback, captureHandler)
-        } catch (e: Exception) {
-            Log.e("Camera", "Error AF: ${e.message}")
-        }
-    }
-
-    private fun getCameraId(useFront: Boolean): String? {
-        return try {
-            cameraManager.cameraIdList.firstOrNull { id ->
-                val facing = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
-                if (useFront) facing == CameraCharacteristics.LENS_FACING_FRONT
-                else facing == CameraCharacteristics.LENS_FACING_BACK
-            }
-        } catch (e: Exception) { null }
-    }
-
-    fun stopCamera() {
-        try {
-            captureSession?.close(); captureSession = null
-            cameraDevice?.close(); cameraDevice = null
-            imageReader?.close(); imageReader = null
-            captureRequestBuilder = null
-        } catch (e: Exception) {
-            Log.e("Camera", "Error deteniendo: ${e.message}")
-        }
-    }
-}
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height,
