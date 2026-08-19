@@ -42,12 +42,10 @@ class CameraStreamManager(
     private var maxAeRegions = 0
     private var supportedFpsRanges: Array<Range<Int>>? = null
     private var availableStabModes: IntArray? = null
-    private var dummyReader: ImageReader? = null
 
     // Parámetros de la sesión actual (se guardan para poder reintentar en "modo seguro")
     private var lastWidth = 1280
     private var lastHeight = 720
-    private var lastCameraId: String? = null
     private var safeModeActive = false
     private var restartAttempted = false
 
@@ -93,7 +91,6 @@ class CameraStreamManager(
             val cameraId = getCameraId(useFrontCamera) ?: run {
                 Log.e("Camera", "No se encontró cámara"); onErrorMessage("No se encontró cámara"); return
             }
-            lastCameraId = cameraId
 
             val characteristics = cameraManager.getCameraCharacteristics(cameraId)
             val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: run {
@@ -106,49 +103,33 @@ class CameraStreamManager(
             supportedFpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             availableStabModes = characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
 
-            val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
-            val bestSize = supportedSizes
+            // IMPORTANTE: se captura en YUV_420_888, NO en JPEG.
+            // Pedir un flujo *repetido* (repeating request) de JPEG directamente a la
+            // cámara no es un caso de uso estándar del Camera2 API — es para fotos
+            // individuales — y muchos HAL (sobre todo MediaTek en equipos recientes,
+            // como este Honor con chip MediaTek) lo rechazan en cada frame con
+            // "reason=0", sin importar qué otros parámetros se quiten.
+            // YUV_420_888 sí está garantizado para streaming continuo en cualquier
+            // dispositivo Camera2, así que capturamos en ese formato y convertimos
+            // cada frame a JPEG nosotros mismos en software.
+            val yuvSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
+            val bestSize = yuvSizes
                 .filter { it.width <= width && it.height <= height }
                 .maxByOrNull { it.width.toLong() * it.height }
-                ?: supportedSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
+                ?: yuvSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
                 ?: return
 
             Log.d("Camera", "Resolución: ${bestSize.width}x${bestSize.height}, sensor: $sensorOrientation°, safeMode=$safeMode")
 
-            imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.JPEG, 2)
+            imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.YUV_420_888, 2)
             imageReader!!.setOnImageAvailableListener({ reader ->
                 val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
                 encodeHandler.post {
-                    try { processJpegImage(image) }
+                    try { processYuvImage(image) }
                     catch (e: Exception) { Log.e("Camera", "Error frame: ${e.message}") }
                     finally { image.close() }
                 }
             }, captureHandler)
-
-            // Algunos HAL de cámara (MediaTek y otros) requieren un stream adicional
-            // tipo "preview" además de la salida JPEG, o fallan con ERROR_CAMERA_DEVICE.
-            // Usamos un ImageReader YUV de baja resolución cuyos frames se descartan
-            // inmediatamente (para que el buffer no se llene y la cámara no rechace capturas).
-            // En "modo seguro" NO se agrega este stream extra, porque en algunos
-            // dispositivos es precisamente esta combinación la que provoca
-            // "reason=0" en cada captura tras una actualización de firmware/Android.
-            dummyReader = null
-            if (!safeMode) {
-                val previewSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
-                if (!previewSizes.isNullOrEmpty()) {
-                    val previewSize = previewSizes
-                        .filter { it.width <= 640 && it.height <= 480 }
-                        .maxByOrNull { it.width.toLong() * it.height }
-                        ?: previewSizes.minByOrNull { it.width.toLong() * it.height }
-                    if (previewSize != null) {
-                        dummyReader = ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 3).apply {
-                            setOnImageAvailableListener({ reader ->
-                                try { reader.acquireLatestImage()?.close() } catch (e: Exception) { }
-                            }, captureHandler)
-                        }
-                    }
-                }
-            }
 
             cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
@@ -180,13 +161,53 @@ class CameraStreamManager(
         }
     }
 
-    private fun processJpegImage(image: Image) {
-        val buffer: ByteBuffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
+    // Convierte un Image en formato YUV_420_888 a un array NV21, respetando
+    // rowStride/pixelStride (algunos dispositivos añaden padding entre filas).
+    private fun imageToNv21(image: Image): ByteArray {
+        val width = image.width
+        val height = image.height
+        val nv21 = ByteArray(width * height * 3 / 2)
+
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+
+        var idx = 0
+        val yBuffer = yPlane.buffer
+        val yRowStride = yPlane.rowStride
+        for (row in 0 until height) {
+            yBuffer.position(row * yRowStride)
+            yBuffer.get(nv21, idx, width)
+            idx += width
+        }
+
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        val uvRowStride = uPlane.rowStride
+        val uvPixelStride = uPlane.pixelStride
+        val chromaHeight = height / 2
+        val chromaWidth = width / 2
+
+        for (row in 0 until chromaHeight) {
+            for (col in 0 until chromaWidth) {
+                val vuIndex = row * uvRowStride + col * uvPixelStride
+                nv21[idx++] = vBuffer.get(vuIndex)
+                nv21[idx++] = uBuffer.get(vuIndex)
+            }
+        }
+
+        return nv21
+    }
+
+    private fun processYuvImage(image: Image) {
+        val nv21 = imageToNv21(image)
+        val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+        val jpegOut = ByteArrayOutputStream()
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 90, jpegOut)
+        val jpegBytes = jpegOut.toByteArray()
 
         val rotation = calculateRotation()
-        val finalBytes = if (rotation != 0) rotateBitmap(bytes, rotation, isFrontCamera) else bytes
+        val finalBytes = if (rotation != 0 || isFrontCamera) rotateJpeg(jpegBytes, rotation, isFrontCamera) else jpegBytes
 
         server.updateFrame(finalBytes)
 
@@ -199,17 +220,17 @@ class CameraStreamManager(
         }
     }
 
-    private fun rotateBitmap(jpegBytes: ByteArray, rotation: Int, isFront: Boolean): ByteArray {
+    private fun rotateJpeg(jpegBytes: ByteArray, rotation: Int, isFront: Boolean): ByteArray {
         return try {
             val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
             val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, options) ?: return jpegBytes
             val matrix = Matrix().apply {
-                postRotate(rotation.toFloat())
+                if (rotation != 0) postRotate(rotation.toFloat())
                 if (isFront) postScale(-1f, 1f)
             }
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
             val out = ByteArrayOutputStream()
-            rotated.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            rotated.compress(Bitmap.CompressFormat.JPEG, 90, out)
             bitmap.recycle(); rotated.recycle()
             out.toByteArray()
         } catch (e: Exception) { jpegBytes }
@@ -217,7 +238,7 @@ class CameraStreamManager(
 
     private fun createCaptureSession(camera: CameraDevice, safeMode: Boolean) {
         try {
-            val targets = listOfNotNull(imageReader!!.surface, dummyReader?.surface)
+            val targets = listOfNotNull(imageReader!!.surface)
             camera.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
@@ -225,7 +246,6 @@ class CameraStreamManager(
                         val template = if (safeMode) CameraDevice.TEMPLATE_PREVIEW else CameraDevice.TEMPLATE_RECORD
                         captureRequestBuilder = camera.createCaptureRequest(template).apply {
                             addTarget(imageReader!!.surface)
-                            dummyReader?.surface?.let { addTarget(it) }
                             // FPS - usar un rango realmente soportado por el dispositivo
                             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, if (safeMode) pickSafestFpsRange() else pickBestFpsRange())
                             // Auto exposición
@@ -257,13 +277,10 @@ class CameraStreamManager(
                                     }
                                 }
                             }
-                            // Calidad
-                            set(CaptureRequest.JPEG_QUALITY, 92.toByte())
+                            // Bordes / reducción de ruido
                             set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
                             set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
                             // Estabilización — solo si el dispositivo la soporta y no estamos en modo seguro.
-                            // Forzarla sin comprobar soporte es una causa común de que el HAL rechace
-                            // cada captura con "reason=0" tras actualizaciones de firmware/Android.
                             val stabSupported = availableStabModes?.contains(
                                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
                             ) == true
@@ -333,8 +350,8 @@ class CameraStreamManager(
     }
 
     // Reintenta la sesión de cámara quitando todos los ajustes "opcionales" que
-    // pueden no ser soportados por el HAL en la combinación actual de streams:
-    // sin stream YUV extra, sin regiones AF/AE, sin estabilización, plantilla PREVIEW.
+    // pueden no ser soportados por el HAL: sin regiones AF/AE, sin estabilización,
+    // plantilla PREVIEW en vez de RECORD.
     private fun retryInSafeMode() {
         Log.d("Camera", "Reintentando en modo seguro")
         captureHandler.post {
@@ -342,7 +359,6 @@ class CameraStreamManager(
                 captureSession?.close(); captureSession = null
                 cameraDevice?.close(); cameraDevice = null
                 imageReader?.close(); imageReader = null
-                dummyReader?.close(); dummyReader = null
             } catch (e: Exception) { }
             safeModeActive = true
             captureFailCount = 0
@@ -385,7 +401,6 @@ class CameraStreamManager(
             captureSession?.close(); captureSession = null
             cameraDevice?.close(); cameraDevice = null
             imageReader?.close(); imageReader = null
-            dummyReader?.close(); dummyReader = null
             captureRequestBuilder = null
         } catch (e: Exception) {
             Log.e("Camera", "Error deteniendo: ${e.message}")
