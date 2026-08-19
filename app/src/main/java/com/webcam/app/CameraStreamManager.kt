@@ -85,76 +85,90 @@ class CameraStreamManager(
 
     @SuppressLint("MissingPermission")
     private fun openAndConfigure(width: Int, height: Int, useFrontCamera: Boolean, safeMode: Boolean) {
-        val cameraId = getCameraId(useFrontCamera) ?: run {
-            Log.e("Camera", "No se encontró cámara"); onErrorMessage("No se encontró cámara"); return
-        }
-        lastCameraId = cameraId
-
-        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: run {
-            onErrorMessage("No se pudo leer config. de cámara"); return
-        }
-        sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-        activeArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-        maxAfRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
-        maxAeRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
-        supportedFpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-        availableStabModes = characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
-
-        val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
-        val bestSize = supportedSizes
-            .filter { it.width <= width && it.height <= height }
-            .maxByOrNull { it.width.toLong() * it.height }
-            ?: supportedSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
-            ?: return
-
-        Log.d("Camera", "Resolución: ${bestSize.width}x${bestSize.height}, sensor: $sensorOrientation°, safeMode=$safeMode")
-
-        imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.JPEG, 2)
-        imageReader!!.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            encodeHandler.post {
-                try { processJpegImage(image) }
-                catch (e: Exception) { Log.e("Camera", "Error frame: ${e.message}") }
-                finally { image.close() }
+        // Todo el cuerpo va envuelto en try/catch: abrir la cámara puede lanzar
+        // CameraAccessException (p. ej. "CAMERA_IN_USE" si se reabre demasiado
+        // rápido tras cerrarla) y, al ejecutarse en un HandlerThread, una
+        // excepción sin capturar aquí tumba la app entera.
+        try {
+            val cameraId = getCameraId(useFrontCamera) ?: run {
+                Log.e("Camera", "No se encontró cámara"); onErrorMessage("No se encontró cámara"); return
             }
-        }, captureHandler)
+            lastCameraId = cameraId
 
-        // Algunos HAL de cámara (MediaTek y otros) requieren un stream adicional
-        // tipo "preview" además de la salida JPEG, o fallan con ERROR_CAMERA_DEVICE.
-        // Usamos un ImageReader YUV de baja resolución cuyos frames se descartan
-        // inmediatamente (para que el buffer no se llene y la cámara no rechace capturas).
-        // En "modo seguro" NO se agrega este stream extra, porque en algunos
-        // dispositivos es precisamente esta combinación la que provoca
-        // "reason=0" en cada captura tras una actualización de firmware/Android.
-        dummyReader = null
-        if (!safeMode) {
-            val previewSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
-            if (!previewSizes.isNullOrEmpty()) {
-                val previewSize = previewSizes
-                    .filter { it.width <= 640 && it.height <= 480 }
-                    .maxByOrNull { it.width.toLong() * it.height }
-                    ?: previewSizes.minByOrNull { it.width.toLong() * it.height }
-                if (previewSize != null) {
-                    dummyReader = ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 3).apply {
-                        setOnImageAvailableListener({ reader ->
-                            try { reader.acquireLatestImage()?.close() } catch (e: Exception) { }
-                        }, captureHandler)
+            val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+            val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: run {
+                onErrorMessage("No se pudo leer config. de cámara"); return
+            }
+            sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+            activeArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            maxAfRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
+            maxAeRegions = characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
+            supportedFpsRanges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            availableStabModes = characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+
+            val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
+            val bestSize = supportedSizes
+                .filter { it.width <= width && it.height <= height }
+                .maxByOrNull { it.width.toLong() * it.height }
+                ?: supportedSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
+                ?: return
+
+            Log.d("Camera", "Resolución: ${bestSize.width}x${bestSize.height}, sensor: $sensorOrientation°, safeMode=$safeMode")
+
+            imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.JPEG, 2)
+            imageReader!!.setOnImageAvailableListener({ reader ->
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                encodeHandler.post {
+                    try { processJpegImage(image) }
+                    catch (e: Exception) { Log.e("Camera", "Error frame: ${e.message}") }
+                    finally { image.close() }
+                }
+            }, captureHandler)
+
+            // Algunos HAL de cámara (MediaTek y otros) requieren un stream adicional
+            // tipo "preview" además de la salida JPEG, o fallan con ERROR_CAMERA_DEVICE.
+            // Usamos un ImageReader YUV de baja resolución cuyos frames se descartan
+            // inmediatamente (para que el buffer no se llene y la cámara no rechace capturas).
+            // En "modo seguro" NO se agrega este stream extra, porque en algunos
+            // dispositivos es precisamente esta combinación la que provoca
+            // "reason=0" en cada captura tras una actualización de firmware/Android.
+            dummyReader = null
+            if (!safeMode) {
+                val previewSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
+                if (!previewSizes.isNullOrEmpty()) {
+                    val previewSize = previewSizes
+                        .filter { it.width <= 640 && it.height <= 480 }
+                        .maxByOrNull { it.width.toLong() * it.height }
+                        ?: previewSizes.minByOrNull { it.width.toLong() * it.height }
+                    if (previewSize != null) {
+                        dummyReader = ImageReader.newInstance(previewSize.width, previewSize.height, ImageFormat.YUV_420_888, 3).apply {
+                            setOnImageAvailableListener({ reader ->
+                                try { reader.acquireLatestImage()?.close() } catch (e: Exception) { }
+                            }, captureHandler)
+                        }
                     }
                 }
             }
-        }
 
-        cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                cameraDevice = camera
-                createCaptureSession(camera, safeMode)
-            }
-            override fun onDisconnected(camera: CameraDevice) { camera.close() }
-            override fun onError(camera: CameraDevice, error: Int) {
-                Log.e("Camera", "Error: $error"); onErrorMessage("Error cámara: código $error"); camera.close()
-            }
-        }, captureHandler)
+            cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraDevice = camera
+                    try {
+                        createCaptureSession(camera, safeMode)
+                    } catch (e: Exception) {
+                        Log.e("Camera", "Error creando sesión: ${e.message}")
+                        onErrorMessage("Error creando sesión: ${e.message}")
+                    }
+                }
+                override fun onDisconnected(camera: CameraDevice) { camera.close() }
+                override fun onError(camera: CameraDevice, error: Int) {
+                    Log.e("Camera", "Error: $error"); onErrorMessage("Error cámara: código $error"); camera.close()
+                }
+            }, captureHandler)
+        } catch (e: Exception) {
+            Log.e("Camera", "Error abriendo cámara: ${e.message}")
+            onErrorMessage("Error al abrir cámara: ${e.message}")
+        }
     }
 
     private fun calculateRotation(): Int {
@@ -332,7 +346,12 @@ class CameraStreamManager(
             } catch (e: Exception) { }
             safeModeActive = true
             captureFailCount = 0
-            openAndConfigure(lastWidth, lastHeight, isFrontCamera, safeMode = true)
+            // Pequeño retraso: reabrir la cámara inmediatamente después de cerrarla
+            // puede lanzar CameraAccessException (CAMERA_IN_USE) porque el sistema
+            // aún no terminó de liberar el dispositivo.
+            captureHandler.postDelayed({
+                openAndConfigure(lastWidth, lastHeight, isFrontCamera, safeMode = true)
+            }, 350)
         }
     }
 
