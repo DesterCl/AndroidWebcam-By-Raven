@@ -52,6 +52,7 @@ class CameraStreamManager(
         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        activeArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
 
         val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
         val bestSize = supportedSizes
@@ -145,13 +146,21 @@ class CameraStreamManager(
                             // AF continuo para video — reenfoca solo constantemente
                             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                             // Zona de enfoque: centro de la imagen (coordenadas van de -1000 a 1000)
-                            set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(
-                                MeteringRectangle(Rect(-300, -300, 300, 300), MeteringRectangle.METERING_WEIGHT_MAX)
-                            ))
-                            // Zona de exposición: igual, centrada
-                            set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(
-                                MeteringRectangle(Rect(-300, -300, 300, 300), MeteringRectangle.METERING_WEIGHT_MAX)
-                            ))
+                            // Zona de enfoque/exposición: centro del sensor (coordenadas reales, no negativas)
+                            activeArraySize?.let { rect ->
+                                val cx = rect.width() / 2
+                                val cy = rect.height() / 2
+                                val half = minOf(rect.width(), rect.height()) / 6
+                                val meteringRect = MeteringRectangle(
+                                    (cx - half).coerceAtLeast(0),
+                                    (cy - half).coerceAtLeast(0),
+                                    half * 2,
+                                    half * 2,
+                                    MeteringRectangle.METERING_WEIGHT_MAX
+                                )
+                                set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(meteringRect))
+                                set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(meteringRect))
+                            }
                             // Calidad
                             set(CaptureRequest.JPEG_QUALITY, 92.toByte())
                             set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
