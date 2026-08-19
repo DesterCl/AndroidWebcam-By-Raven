@@ -34,9 +34,9 @@ class CameraStreamManager(
     private var sensorOrientation = 0
     private var isFrontCamera = false
     private var currentRotation = 0 // Rotación actual del dispositivo (0, 90, 180, 270)
-    private var activeArraySize: Rect? = null
     private var captureRequestBuilder: CaptureRequest.Builder? = null
     private var afState = 0
+    private var activeArraySize: Rect? = null
 
     fun setDeviceRotation(rotation: Int) {
         currentRotation = rotation
@@ -145,7 +145,6 @@ class CameraStreamManager(
                             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
                             // AF continuo para video — reenfoca solo constantemente
                             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                            // Zona de enfoque: centro de la imagen (coordenadas van de -1000 a 1000)
                             // Zona de enfoque/exposición: centro del sensor (coordenadas reales, no negativas)
                             activeArraySize?.let { rect ->
                                 val cx = rect.width() / 2
