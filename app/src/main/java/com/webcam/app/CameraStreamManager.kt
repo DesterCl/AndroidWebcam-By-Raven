@@ -34,6 +34,7 @@ class CameraStreamManager(
     private var sensorOrientation = 0
     private var isFrontCamera = false
     private var currentRotation = 0 // Rotación actual del dispositivo (0, 90, 180, 270)
+    private var activeArraySize: Rect? = null
     private var captureRequestBuilder: CaptureRequest.Builder? = null
     private var afState = 0
 
