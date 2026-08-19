@@ -8,10 +8,10 @@ import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
-import android.renderscript.*
 import android.util.Log
 import android.util.Range
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 
 class CameraStreamManager(
     private val context: Context,
@@ -23,45 +23,50 @@ class CameraStreamManager(
     private var imageReader: ImageReader? = null
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-    // Dos hilos: uno para captura, otro para encoding
     private val captureThread = HandlerThread("CameraCapture").also { it.start() }
     private val encodeThread = HandlerThread("CameraEncode").also { it.start() }
     private val captureHandler = Handler(captureThread.looper)
     private val encodeHandler = Handler(encodeThread.looper)
 
-    // Pool de ByteArrayOutputStream para evitar allocations
-    private val baoPool = ArrayDeque<ByteArrayOutputStream>()
-
     private var frameCount = 0
     private var lastFpsTime = System.currentTimeMillis()
     private var sensorOrientation = 0
     private var isFrontCamera = false
+    private var frameWidth = 0
+    private var frameHeight = 0
 
     @SuppressLint("MissingPermission")
     fun startCamera(width: Int, height: Int, useFrontCamera: Boolean) {
         isFrontCamera = useFrontCamera
-        val cameraId = getCameraId(useFrontCamera) ?: return
+        val cameraId = getCameraId(useFrontCamera) ?: run {
+            Log.e("Camera", "No se encontró cámara")
+            return
+        }
+
         val characteristics = cameraManager.getCameraCharacteristics(cameraId)
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
 
-        // Buscar mejor resolución soportada
-        val supportedSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
+        // Usar JPEG directamente — más simple y estable que YUV
+        val supportedSizes = map.getOutputSizes(ImageFormat.JPEG)
         val bestSize = supportedSizes
             .filter { it.width <= width && it.height <= height }
             .maxByOrNull { it.width.toLong() * it.height }
-            ?: supportedSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }!!
+            ?: supportedSizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
+            ?: return
 
-        Log.d("Camera", "Resolución seleccionada: ${bestSize.width}x${bestSize.height}")
+        frameWidth = bestSize.width
+        frameHeight = bestSize.height
+        Log.d("Camera", "Resolución: ${frameWidth}x${frameHeight}, orientación: $sensorOrientation")
 
-        // YUV_420_888: formato nativo de la cámara, sin conversión interna
-        imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.YUV_420_888, 4)
+        imageReader = ImageReader.newInstance(frameWidth, frameHeight, ImageFormat.JPEG, 2)
         imageReader!!.setOnImageAvailableListener({ reader ->
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            // Encoding en hilo separado
             encodeHandler.post {
                 try {
-                    encodeAndSend(image)
+                    processJpegImage(image)
+                } catch (e: Exception) {
+                    Log.e("Camera", "Error procesando frame: ${e.message}")
                 } finally {
                     image.close()
                 }
@@ -73,147 +78,122 @@ class CameraStreamManager(
                 cameraDevice = camera
                 createCaptureSession(camera)
             }
-            override fun onDisconnected(camera: CameraDevice) { camera.close() }
+            override fun onDisconnected(camera: CameraDevice) {
+                Log.w("Camera", "Cámara desconectada")
+                camera.close()
+            }
             override fun onError(camera: CameraDevice, error: Int) {
-                Log.e("Camera", "Error: $error"); camera.close()
+                Log.e("Camera", "Error de cámara: $error")
+                camera.close()
             }
         }, captureHandler)
     }
 
-    private fun encodeAndSend(image: Image) {
-        try {
-            // Convertir YUV a Bitmap usando YuvImage (más rápido que BitmapFactory)
-            val yuvBytes = yuv420ToNv21(image)
-            val yuvImage = YuvImage(yuvBytes, ImageFormat.NV21, image.width, image.height, null)
+    private fun processJpegImage(image: Image) {
+        val plane = image.planes[0]
+        val buffer: ByteBuffer = plane.buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
 
-            val bao = baoPool.removeLastOrNull() ?: ByteArrayOutputStream(image.width * image.height / 2)
-            bao.reset()
+        // Rotar solo si es necesario
+        val finalBytes = if (sensorOrientation != 0 && sensorOrientation != 360) {
+            rotateBitmap(bytes, sensorOrientation, isFrontCamera)
+        } else {
+            bytes
+        }
 
-            // Calidad 90: buen balance velocidad/calidad para streaming
-            yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 90, bao)
+        server.updateFrame(finalBytes)
 
-            val jpegBytes = bao.toByteArray()
-            baoPool.addLast(bao)
-
-            // Rotar solo si es necesario (evitar rotación en resoluciones altas)
-            val finalBytes = if (sensorOrientation != 0 && sensorOrientation != 360) {
-                rotateFast(jpegBytes, sensorOrientation, isFrontCamera)
-            } else {
-                jpegBytes
-            }
-
-            server.updateFrame(finalBytes)
-
-            frameCount++
-            val now = System.currentTimeMillis()
-            if (now - lastFpsTime >= 1000) {
-                onFpsUpdate(frameCount)
-                frameCount = 0
-                lastFpsTime = now
-            }
-        } catch (e: Exception) {
-            Log.e("Camera", "Error encoding: ${e.message}")
+        frameCount++
+        val now = System.currentTimeMillis()
+        if (now - lastFpsTime >= 1000) {
+            onFpsUpdate(frameCount)
+            frameCount = 0
+            lastFpsTime = now
         }
     }
 
-    private fun yuv420ToNv21(image: Image): ByteArray {
-        val width = image.width
-        val height = image.height
-        val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
-        val vPlane = image.planes[2]
-
-        val yBuffer = yPlane.buffer
-        val uBuffer = uPlane.buffer
-        val vBuffer = vPlane.buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + width * height / 2)
-
-        // Copiar canal Y
-        yBuffer.get(nv21, 0, ySize)
-
-        // Intercalar V y U para NV21
-        val vBytes = ByteArray(vSize)
-        val uBytes = ByteArray(uSize)
-        vBuffer.get(vBytes)
-        uBuffer.get(uBytes)
-
-        val uvStride = vPlane.rowStride
-        val uvPixelStride = vPlane.pixelStride
-
-        var pos = ySize
-        var row = 0
-        while (row < height / 2) {
-            var col = 0
-            while (col < width / 2) {
-                val vIdx = row * uvStride + col * uvPixelStride
-                val uIdx = row * uvStride + col * uvPixelStride
-                if (vIdx < vBytes.size && uIdx < uBytes.size) {
-                    nv21[pos++] = vBytes[vIdx]
-                    nv21[pos++] = uBytes[uIdx]
-                }
-                col++
-            }
-            row++
-        }
-        return nv21
-    }
-
-    private fun rotateFast(jpegBytes: ByteArray, rotation: Int, isFront: Boolean): ByteArray {
+    private fun rotateBitmap(jpegBytes: ByteArray, rotation: Int, isFront: Boolean): ByteArray {
         return try {
-            val options = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565 // Menos memoria
+            }
             val bitmap = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, options)
+                ?: return jpegBytes
             val matrix = Matrix().apply {
                 postRotate(rotation.toFloat())
                 if (isFront) postScale(-1f, 1f)
             }
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
             val out = ByteArrayOutputStream()
-            rotated.compress(Bitmap.CompressFormat.JPEG, 90, out)
-            bitmap.recycle(); rotated.recycle()
+            rotated.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            bitmap.recycle()
+            rotated.recycle()
             out.toByteArray()
-        } catch (e: Exception) { jpegBytes }
+        } catch (e: Exception) {
+            Log.e("Camera", "Error rotando: ${e.message}")
+            jpegBytes
+        }
     }
 
     private fun createCaptureSession(camera: CameraDevice) {
-        camera.createCaptureSession(listOf(imageReader!!.surface), object : CameraCaptureSession.StateCallback() {
-            override fun onConfigured(session: CameraCaptureSession) {
-                captureSession = session
-                val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                    addTarget(imageReader!!.surface)
-                    // Forzar máximo FPS
-                    set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 60))
-                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-                    set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                    set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-                    set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON)
-                    set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
-                    set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
-                }
-                session.setRepeatingRequest(request.build(), null, captureHandler)
-            }
-            override fun onConfigureFailed(session: CameraCaptureSession) {
-                Log.e("Camera", "Session config failed")
-            }
-        }, captureHandler)
+        try {
+            camera.createCaptureSession(
+                listOf(imageReader!!.surface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            val request = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                                addTarget(imageReader!!.surface)
+                                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(30, 30))
+                                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+                                set(CaptureRequest.JPEG_QUALITY, 92.toByte())
+                                set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST)
+                                set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST)
+                            }
+                            session.setRepeatingRequest(request.build(), null, captureHandler)
+                        } catch (e: Exception) {
+                            Log.e("Camera", "Error creando request: ${e.message}")
+                        }
+                    }
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        Log.e("Camera", "Fallo configurando sesión")
+                    }
+                },
+                captureHandler
+            )
+        } catch (e: Exception) {
+            Log.e("Camera", "Error creando sesión: ${e.message}")
+        }
     }
 
     private fun getCameraId(useFront: Boolean): String? {
-        return cameraManager.cameraIdList.firstOrNull { id ->
-            val facing = cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
-            if (useFront) facing == CameraCharacteristics.LENS_FACING_FRONT
-            else facing == CameraCharacteristics.LENS_FACING_BACK
+        return try {
+            cameraManager.cameraIdList.firstOrNull { id ->
+                val facing = cameraManager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.LENS_FACING)
+                if (useFront) facing == CameraCharacteristics.LENS_FACING_FRONT
+                else facing == CameraCharacteristics.LENS_FACING_BACK
+            }
+        } catch (e: Exception) {
+            Log.e("Camera", "Error buscando cámara: ${e.message}")
+            null
         }
     }
 
     fun stopCamera() {
-        captureSession?.close(); captureSession = null
-        cameraDevice?.close(); cameraDevice = null
-        imageReader?.close(); imageReader = null
-        baoPool.clear()
+        try {
+            captureSession?.close()
+            captureSession = null
+            cameraDevice?.close()
+            cameraDevice = null
+            imageReader?.close()
+            imageReader = null
+        } catch (e: Exception) {
+            Log.e("Camera", "Error deteniendo cámara: ${e.message}")
+        }
     }
 }
