@@ -47,25 +47,26 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        btnToggle      = findViewById(R.id.btnToggle)
-        btnRotate      = findViewById(R.id.btnRotate)
-        btnFlash       = findViewById(R.id.btnFlash)
-        btnScreenToggle= findViewById(R.id.btnScreenToggle)
-        tvStatus       = findViewById(R.id.tvStatus)
-        tvUrl          = findViewById(R.id.tvUrl)
-        tvFps          = findViewById(R.id.tvFps)
-        tvOrientation  = findViewById(R.id.tvOrientation)
-        spinnerQuality = findViewById(R.id.spinnerQuality)
-        spinnerCamera  = findViewById(R.id.spinnerCamera)
-        seekZoom       = findViewById(R.id.seekZoom)
-        tvZoom         = findViewById(R.id.tvZoom)
+        btnToggle       = findViewById(R.id.btnToggle)
+        btnRotate       = findViewById(R.id.btnRotate)
+        btnFlash        = findViewById(R.id.btnFlash)
+        btnScreenToggle = findViewById(R.id.btnScreenToggle)
+        tvStatus        = findViewById(R.id.tvStatus)
+        tvUrl           = findViewById(R.id.tvUrl)
+        tvFps           = findViewById(R.id.tvFps)
+        tvOrientation   = findViewById(R.id.tvOrientation)
+        spinnerQuality  = findViewById(R.id.spinnerQuality)
+        spinnerCamera   = findViewById(R.id.spinnerCamera)
+        seekZoom        = findViewById(R.id.seekZoom)
+        tvZoom          = findViewById(R.id.tvZoom)
 
         server        = MjpegHttpServer(PORT)
         screenCapture = ScreenCaptureManager(this, server) { fps ->
             runOnUiThread { tvFps.text = "FPS: $fps" }
         }
         camStream = CameraStreamManager(
-            context = this, server = server,
+            context = this,
+            server  = server,
             onFpsUpdate    = { fps -> runOnUiThread { tvFps.text = "FPS: $fps" } },
             onErrorMessage = { msg -> runOnUiThread {
                 tvStatus.text = "❌ $msg"
@@ -90,7 +91,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             if (screenStreaming) stopScreenStream() else requestScreenCapture()
         }
 
-        seekZoom.max = 100; seekZoom.progress = 0
+        seekZoom.max = 100
+        seekZoom.progress = 0
         seekZoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
                 if (!streaming) return
@@ -112,22 +114,35 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onPause() {
         super.onPause()
         sensorMgr.unregisterListener(this)
+        // No detenemos el stream al ir a segundo plano — sigue transmitiendo
+    }
+
+    // Se llama cuando el usuario pulsa Home o cambia de app
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // La cámara y el servidor siguen corriendo en sus hilos propios
+        // Android 16 permite esto siempre que no haya Activity en primer plano activamente
     }
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
         val x = event.values[0]; val y = event.values[1]
         val newRot = when {
-            y >  5f -> 0;   y < -5f -> 180
-            x >  5f -> 270; x < -5f -> 90
-            else -> deviceRotation
+            y >  5f -> 0
+            y < -5f -> 180
+            x >  5f -> 270
+            x < -5f -> 90
+            else    -> deviceRotation
         }
         if (newRot == deviceRotation) return
         deviceRotation = newRot
         camStream.setDeviceRotation(deviceRotation)
         val label = when (newRot) {
-            0->"📱 Vertical"; 180->"📱 Invertido"
-            90->"📱 Horizontal ←"; 270->"📱 Horizontal →"; else->"📱 --"
+            0   -> "📱 Vertical"
+            180 -> "📱 Invertido"
+            90  -> "📱 Horizontal ←"
+            270 -> "📱 Horizontal →"
+            else -> "📱 --"
         }
         runOnUiThread { tvOrientation.text = label }
     }
@@ -151,35 +166,38 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     // ── Cámara ───────────────────────────────────────────────────────────────
     private fun startStream() {
         if (screenStreaming) stopScreenStream()
+
         val res = listOf(3840 to 2160, 2560 to 1440, 1920 to 1080, 1280 to 720, 640 to 480)
         val (w, h) = res[spinnerQuality.selectedItemPosition]
         val cameras = camStream.availableCameras
-        val camId   = if (cameras.isNotEmpty() && spinnerCamera.selectedItemPosition < cameras.size)
+        val camId = if (cameras.isNotEmpty() && spinnerCamera.selectedItemPosition < cameras.size)
             cameras[spinnerCamera.selectedItemPosition].id else null
 
         server.start()
-        if (camId != null) camStream.startCameraById(camId, w, h) else camStream.startCamera(w, h, false)
-
-        // Iniciar servicio en segundo plano
-        startForegroundService(Intent(this, StreamService::class.java))
+        if (camId != null) camStream.startCameraById(camId, w, h)
+        else               camStream.startCamera(w, h, false)
 
         runOnUiThread {
             btnFlash.visibility = if (camStream.hasFlash()) View.VISIBLE else View.GONE
             val maxZ = camStream.getMaxZoom()
             seekZoom.visibility = if (maxZ > 1f) View.VISIBLE else View.GONE
             tvZoom.visibility   = if (maxZ > 1f) View.VISIBLE else View.GONE
-            seekZoom.progress = 0; tvZoom.text = "Zoom: 1.0x"
-            flashOn = false; btnFlash.text = "🔦 Flash OFF"
+            seekZoom.progress   = 0
+            tvZoom.text  = "Zoom: 1.0x"
+            flashOn      = false
+            btnFlash.text = "🔦 Flash OFF"
         }
         setStreamingUI(true)
     }
 
     private fun stopStream() {
-        camStream.stopCamera(); server.stop()
-        stopService(Intent(this, StreamService::class.java))
+        camStream.stopCamera()
+        server.stop()
         runOnUiThread {
-            seekZoom.progress = 0; tvZoom.text = "Zoom: 1.0x"
-            flashOn = false; btnFlash.text = "🔦 Flash OFF"
+            seekZoom.progress = 0
+            tvZoom.text       = "Zoom: 1.0x"
+            flashOn           = false
+            btnFlash.text     = "🔦 Flash OFF"
         }
         setStreamingUI(false)
     }
@@ -190,6 +208,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         startActivityForResult(mgr.createScreenCaptureIntent(), REQ_SCREEN)
     }
 
+    @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_SCREEN && resultCode == RESULT_OK && data != null) {
@@ -197,17 +216,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             val projection = mgr.getMediaProjection(resultCode, data)
             val dm = DisplayMetrics()
-            @Suppress("DEPRECATION")
             windowManager.defaultDisplay.getMetrics(dm)
             server.start()
+            // El servicio en segundo plano solo para pantalla (no requiere foregroundServiceType=camera)
+            val svcIntent = Intent(this, StreamService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                startForegroundService(svcIntent)
+            else
+                startService(svcIntent)
             screenCapture.start(projection, dm.widthPixels, dm.heightPixels, dm.densityDpi)
-            startForegroundService(Intent(this, StreamService::class.java))
             setScreenStreamingUI(true)
         }
     }
 
     private fun stopScreenStream() {
-        screenCapture.stop(); server.stop()
+        screenCapture.stop()
+        server.stop()
         stopService(Intent(this, StreamService::class.java))
         setScreenStreamingUI(false)
     }
@@ -216,9 +240,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun setStreamingUI(on: Boolean) {
         streaming = on
         val ip = NetworkUtils.getLocalIpAddress(this)
-        tvUrl.text = "URL: http://$ip:$PORT"
+        tvUrl.text       = "URL: http://$ip:$PORT"
         tvUrl.visibility = if (on) View.VISIBLE else View.GONE
-        tvStatus.text = if (on) "🟢 Transmitiendo (cámara)" else "🔴 Detenido"
+        tvStatus.text    = if (on) "🟢 Transmitiendo (cámara)" else "🔴 Detenido"
         tvStatus.setTextColor(getColor(
             if (on) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
         btnToggle.text = if (on) "Detener cámara" else "Iniciar cámara"
@@ -228,9 +252,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun setScreenStreamingUI(on: Boolean) {
         screenStreaming = on
         val ip = NetworkUtils.getLocalIpAddress(this)
-        tvUrl.text = "URL: http://$ip:$PORT"
+        tvUrl.text       = "URL: http://$ip:$PORT"
         tvUrl.visibility = if (on) View.VISIBLE else View.GONE
-        tvStatus.text = if (on) "🟢 Transmitiendo (pantalla)" else "🔴 Detenido"
+        tvStatus.text    = if (on) "🟢 Transmitiendo (pantalla)" else "🔴 Detenido"
         tvStatus.setTextColor(getColor(
             if (on) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
         btnScreenToggle.text = if (on) "Detener pantalla" else "📺 Transmitir pantalla"
@@ -252,7 +276,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         super.onRequestPermissionsResult(code, perms, results)
         if (results.any { it != PackageManager.PERMISSION_GRANTED })
             tvStatus.text = "⚠️ Permiso requerido"
-        else populateCameraSpinner()
+        else
+            populateCameraSpinner()
     }
 
     override fun onDestroy() {
