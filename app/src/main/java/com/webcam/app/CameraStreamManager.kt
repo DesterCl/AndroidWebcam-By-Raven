@@ -24,15 +24,14 @@ class CameraStreamManager(
     private var imageReader: ImageReader? = null
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
 
-    // UN solo hilo — igual que la versión que funcionaba
-    private val camThread = HandlerThread("CamThread").also { it.start() }
+    private val camThread  = HandlerThread("CamThread").also { it.start() }
     private val camHandler = Handler(camThread.looper)
 
     private var frameCount  = 0
     private var lastFpsTime = System.currentTimeMillis()
-    private var sensorOrientation = 0
-    private var isFrontCamera     = false
-    private var currentRotation   = 0
+    private var sensorOrientation    = 0
+    private var isFrontCamera        = false
+    private var currentRotation      = 0
     private var manualRotationOffset = 0
     private var captureRequestBuilder: CaptureRequest.Builder? = null
     private var afState = -1
@@ -42,14 +41,22 @@ class CameraStreamManager(
     private var maxAeRegions   = 0
     private var supportedFpsRanges: Array<Range<Int>>? = null
     private var stabModesSupported = false
-    private var hasFlash  = false
+    private var hasFlash     = false
     private var flashEnabled = false
-    private var maxZoom   = 1.0f
-    private var currentZoom = 1.0f
+    private var maxZoom      = 1.0f
+    private var currentZoom  = 1.0f
 
     private var lastWidth  = 1280
     private var lastHeight = 720
     private var lastFront  = false
+
+    // Rotación calculada UNA SOLA VEZ al abrir la cámara
+    // Solo se recalcula si el usuario gira el teléfono o pulsa el botón manual
+    @Volatile private var cachedRotation = 0
+    @Volatile private var needsRotation  = false
+
+    // Reusar el mismo ByteArrayOutputStream evita allocations por frame
+    private val frameBuffer = ByteArrayOutputStream(640 * 480 * 2)
 
     // ── Cámaras disponibles ──────────────────────────────────────────────────
     data class CameraInfo(val id: String, val label: String)
@@ -83,8 +90,26 @@ class CameraStreamManager(
     }
 
     // ── Controles ────────────────────────────────────────────────────────────
-    fun setDeviceRotation(r: Int) { currentRotation = r }
-    fun rotateManual(deg: Int)    { manualRotationOffset = (manualRotationOffset + deg + 360) % 360 }
+    fun setDeviceRotation(r: Int) {
+        currentRotation = r
+        updateCachedRotation()
+    }
+
+    fun rotateManual(deg: Int) {
+        manualRotationOffset = (manualRotationOffset + deg + 360) % 360
+        updateCachedRotation()
+    }
+
+    // Precalcula la rotación para no hacerlo en cada frame
+    private fun updateCachedRotation() {
+        val rot = if (isFrontCamera)
+            (sensorOrientation + currentRotation + manualRotationOffset + 360) % 360
+        else
+            (sensorOrientation - currentRotation + manualRotationOffset + 360) % 360
+        cachedRotation = rot
+        needsRotation  = (rot != 0 || isFrontCamera)
+    }
+
     fun getMaxZoom() = maxZoom
     fun hasFlash()   = hasFlash
 
@@ -152,16 +177,17 @@ class CameraStreamManager(
             currentZoom   = 1f
             flashEnabled  = false
 
+            // Precalcular rotación inicial
+            updateCachedRotation()
+
             val sizes    = map.getOutputSizes(ImageFormat.YUV_420_888)
             val bestSize = sizes.filter { it.width <= width && it.height <= height }
                 .maxByOrNull { it.width.toLong() * it.height }
                 ?: sizes.minByOrNull { Math.abs(it.width - width) + Math.abs(it.height - height) }
                 ?: run { onErrorMessage("Sin resolución compatible"); return }
 
-            Log.d("CAM", "${bestSize.width}x${bestSize.height} sensor=$sensorOrientation")
+            Log.d("CAM", "${bestSize.width}x${bestSize.height} rot=$cachedRotation needsRot=$needsRotation")
 
-            // CRÍTICO: procesar en el MISMO listener, sin post() a otro hilo
-            // En Android 16 el Image se invalida antes de que el Handler lo procese
             imageReader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.YUV_420_888, 2)
             imageReader!!.setOnImageAvailableListener({ reader ->
                 val img = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
@@ -173,7 +199,7 @@ class CameraStreamManager(
             cameraManager.openCamera(cameraId, stateCallback, camHandler)
 
         } catch (e: CameraAccessException) {
-            onErrorMessage("Acceso denegado a cámara (${e.reason})")
+            onErrorMessage("Acceso denegado (${e.reason})")
         } catch (e: Exception) {
             Log.e("CAM", "openById: ${e.message}")
             onErrorMessage("Error abriendo cámara: ${e.message}")
@@ -242,17 +268,15 @@ class CameraStreamManager(
             }
         }
         override fun onConfigureFailed(session: CameraCaptureSession) {
-            onErrorMessage("Fallo configurando sesión de cámara")
+            onErrorMessage("Fallo configurando sesión")
         }
     }
 
     private fun chooseFpsRange(): Range<Int> {
         val ranges = supportedFpsRanges
         if (ranges.isNullOrEmpty()) return Range(15, 30)
-        return ranges.filter { it.upper >= 24 }
-            .minByOrNull { Math.abs(it.upper - 30) * 10 + (it.upper - it.lower) }
-            ?: ranges.maxByOrNull { it.upper }
-            ?: Range(15, 30)
+        // Buscar el rango más alto disponible (no solo 30)
+        return ranges.maxByOrNull { it.upper } ?: Range(15, 30)
     }
 
     private val captureCallback = object : CameraCaptureSession.CaptureCallback() {
@@ -279,22 +303,24 @@ class CameraStreamManager(
 
     // ── Procesamiento de frames ───────────────────────────────────────────────
     private fun processYuv(image: Image) {
-        val nv21  = yuv420ToNv21(image)
-        val yuv   = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-        val baos  = ByteArrayOutputStream()
-        yuv.compressToJpeg(Rect(0, 0, image.width, image.height), 92, baos)
-        val jpeg  = baos.toByteArray()
-        val rot   = calculateRotation()
-        val final = if (rot != 0 || isFrontCamera) rotateJpeg(jpeg, rot) else jpeg
+        val nv21 = yuv420ToNv21(image)
+        val yuv  = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+
+        // Reusar buffer — evita crear un nuevo ByteArrayOutputStream cada frame
+        frameBuffer.reset()
+        // Calidad 85: imperceptible vs 92 pero ~15% más rápido de comprimir
+        yuv.compressToJpeg(Rect(0, 0, image.width, image.height), 85, frameBuffer)
+
+        val jpeg = frameBuffer.toByteArray()
+
+        // Rotar solo si hace falta (cachedRotation se precalculó al abrir la cámara)
+        val final = if (needsRotation) rotateJpeg(jpeg, cachedRotation) else jpeg
+
         server.updateFrame(final)
         frameCount++
         val now = System.currentTimeMillis()
         if (now - lastFpsTime >= 1000) { onFpsUpdate(frameCount); frameCount = 0; lastFpsTime = now }
     }
-
-    private fun calculateRotation() =
-        if (isFrontCamera) (sensorOrientation + currentRotation + manualRotationOffset + 360) % 360
-        else               (sensorOrientation - currentRotation + manualRotationOffset + 360) % 360
 
     private fun yuv420ToNv21(image: Image): ByteArray {
         val w = image.width; val h = image.height
@@ -327,7 +353,7 @@ class CameraStreamManager(
             }
             val rot = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, mat, false)
             val out = ByteArrayOutputStream()
-            rot.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            rot.compress(Bitmap.CompressFormat.JPEG, 85, out)
             bmp.recycle(); rot.recycle()
             out.toByteArray()
         } catch (e: Exception) { jpeg }
@@ -348,6 +374,7 @@ class CameraStreamManager(
             imageReader?.close();     imageReader = null
             captureRequestBuilder = null
             flashEnabled = false
+            frameBuffer.reset()
         } catch (e: Exception) { Log.e("CAM", "stop: ${e.message}") }
     }
 }
