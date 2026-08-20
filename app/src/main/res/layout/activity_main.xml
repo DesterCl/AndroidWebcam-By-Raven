@@ -1,62 +1,95 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center_horizontal"
     android:background="#121212">
 
-    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:text="📷 AndroidWebcam" android:textSize="26sp" android:textStyle="bold"
-        android:textColor="#FFFFFF" android:layout_marginTop="16dp" android:layout_marginBottom="8dp"/>
+  <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:orientation="vertical"
+      android:padding="20dp"
+      android:gravity="center_horizontal">
 
+    <!-- Título -->
     <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:text="Sin límites · Sin marcas de agua" android:textSize="13sp"
-        android:textColor="#AAAAAA" android:layout_marginBottom="32dp"/>
+        android:text="📷 AndroidWebcam" android:textSize="24sp" android:textStyle="bold"
+        android:textColor="#FFFFFF" android:layout_marginTop="12dp" android:layout_marginBottom="4dp"/>
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="Sin límites · Sin marcas de agua" android:textSize="12sp"
+        android:textColor="#AAAAAA" android:layout_marginBottom="20dp"/>
 
+    <!-- Selector de cámara (incluye wide, macro, tele, frontal…) -->
     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="Cámara" android:textColor="#CCCCCC" android:textSize="14sp"
+        android:text="Lente / Cámara" android:textColor="#CCCCCC" android:textSize="13sp"
         android:layout_marginBottom="4dp"/>
-
     <Spinner android:id="@+id/spinnerCamera" android:layout_width="match_parent"
+        android:layout_height="48dp" android:background="#2A2A2A" android:layout_marginBottom="14dp"/>
+
+    <!-- Selector de calidad -->
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="Calidad de video" android:textColor="#CCCCCC" android:textSize="13sp"
+        android:layout_marginBottom="4dp"/>
+    <Spinner android:id="@+id/spinnerQuality" android:layout_width="match_parent"
         android:layout_height="48dp" android:background="#2A2A2A" android:layout_marginBottom="20dp"/>
 
-    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:text="Calidad de video" android:textColor="#CCCCCC" android:textSize="14sp"
-        android:layout_marginBottom="4dp"/>
+    <!-- Zoom -->
+    <TextView android:id="@+id/tvZoom" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:text="Zoom: 1.0x"
+        android:textColor="#CCCCCC" android:textSize="13sp"
+        android:layout_marginBottom="4dp" android:visibility="gone"/>
+    <SeekBar android:id="@+id/seekZoom" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginBottom="16dp"
+        android:visibility="gone"/>
 
-    <Spinner android:id="@+id/spinnerQuality" android:layout_width="match_parent"
-        android:layout_height="48dp" android:background="#2A2A2A" android:layout_marginBottom="32dp"/>
+    <!-- Botones de control -->
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:gravity="center"
+        android:layout_marginBottom="14dp">
 
+        <!-- Girar imagen -->
+        <Button android:id="@+id/btnRotate"
+            android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1"
+            android:text="🔄 Girar 90°" android:textSize="13sp"
+            android:backgroundTint="#1565C0" android:textColor="#FFFFFF"
+            android:layout_marginEnd="8dp"/>
+
+        <!-- Flash -->
+        <Button android:id="@+id/btnFlash"
+            android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1"
+            android:text="🔦 Flash OFF" android:textSize="13sp"
+            android:backgroundTint="#E65100" android:textColor="#FFFFFF"
+            android:visibility="gone"/>
+    </LinearLayout>
+
+    <!-- Botón principal -->
     <Button android:id="@+id/btnToggle" android:layout_width="match_parent"
         android:layout_height="56dp" android:text="Iniciar Stream" android:textSize="16sp"
-        android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:layout_marginBottom="24dp"/>
+        android:backgroundTint="#4CAF50" android:textColor="#FFFFFF"
+        android:layout_marginBottom="20dp"/>
 
+    <!-- Estado -->
     <TextView android:id="@+id/tvStatus" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:text="🔴 Detenido"
-        android:textSize="16sp" android:textColor="#FF5555" android:layout_marginBottom="12dp"/>
+        android:textSize="15sp" android:textColor="#FF5555" android:layout_marginBottom="8dp"/>
 
     <TextView android:id="@+id/tvFps" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:text="FPS: --"
-        android:textSize="14sp" android:textColor="#AAAAAA" android:layout_marginBottom="12dp"/>
-    
-    <TextView android:id="@+id/tvOrientation"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="📱 Vertical"
-        android:textSize="14sp"
-        android:textColor="#AAAAAA"
-        android:layout_marginBottom="12dp"/>
+        android:textSize="13sp" android:textColor="#AAAAAA" android:layout_marginBottom="6dp"/>
+
+    <TextView android:id="@+id/tvOrientation" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="📱 Vertical"
+        android:textSize="13sp" android:textColor="#AAAAAA" android:layout_marginBottom="6dp"/>
 
     <TextView android:id="@+id/tvUrl" android:layout_width="wrap_content"
-        android:layout_height="wrap_content" android:textSize="13sp"
+        android:layout_height="wrap_content" android:textSize="12sp"
         android:textColor="#4FC3F7" android:textIsSelectable="true"
-        android:visibility="gone" android:layout_marginTop="8dp"/>
+        android:visibility="gone" android:layout_marginTop="6dp"/>
 
     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
         android:text="📌 Abre la URL en tu PC con OBS o en el navegador"
-        android:textSize="12sp" android:textColor="#888888"
-        android:gravity="center" android:layout_marginTop="32dp"/>
+        android:textSize="11sp" android:textColor="#666666"
+        android:gravity="center" android:layout_marginTop="24dp"/>
 
-</LinearLayout>
+  </LinearLayout>
+</ScrollView>
