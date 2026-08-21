@@ -12,8 +12,6 @@ class MjpegHttpServer(private val port: Int) {
     private val clients = CopyOnWriteArrayList<ClientHandler>()
     private val latestFrame = AtomicReference<ByteArray>(null)
     private var isRunning = false
-    var bandwidthKbps: Int = 200_000 // Default 200 Mbps
-    var jpegQuality: Int = 95
 
     fun start() {
         isRunning = true
@@ -55,17 +53,11 @@ class MjpegHttpServer(private val port: Int) {
                 val input = socket.getInputStream().bufferedReader()
                 output = socket.getOutputStream()
                 val requestLine = input.readLine() ?: return
-                // Leer todos los headers
-                val headers = mutableMapOf<String, String>()
                 var line = input.readLine()
-                while (line != null && line.isNotEmpty()) {
-                    val parts = line.split(": ", limit = 2)
-                    if (parts.size == 2) headers[parts[0].lowercase()] = parts[1]
-                    line = input.readLine()
-                }
+                while (line != null && line.isNotEmpty()) { line = input.readLine() }
                 when {
-                    requestLine.contains("GET /frame") -> serveFrame()
-                    requestLine.contains("GET /stream") -> serveStream()
+                    requestLine.contains("GET /frame")    -> serveFrame()
+                    requestLine.contains("GET /stream")   -> serveStream()
                     requestLine.contains("GET /snapshot") -> serveFrame()
                     else -> serveIndex()
                 }
@@ -93,29 +85,30 @@ class MjpegHttpServer(private val port: Int) {
             val boundary = "frame"
             out.write("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=$boundary\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n".toByteArray(Charsets.UTF_8))
             out.flush()
+            var lastFrameRef: ByteArray? = null
             while (!disconnected && isRunning) {
-                val frame = latestFrame.get() ?: run { Thread.sleep(10); return@run null } ?: continue
-                try {
-                    val header = "--$boundary\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n"
-                    out.write(header.toByteArray(Charsets.UTF_8))
-                    out.write(frame)
-                    out.write("\r\n".toByteArray(Charsets.UTF_8))
-                    out.flush()
-                    // Calcular delay según ancho de banda configurado
-                    val frameSizeBits = frame.size * 8L
-                    val bitsPerMs = bandwidthKbps.toLong()
-                    val transmitMs = frameSizeBits / bitsPerMs
-                    val sleepMs = maxOf(0L, 33L - transmitMs) // target 30fps
-                    if (sleepMs > 0) Thread.sleep(sleepMs)
-                } catch (e: Exception) {
-                    disconnected = true
-                    break
+                val frame = latestFrame.get()
+                // Solo enviar si hay un frame NUEVO — evita el sleep artificial
+                if (frame != null && frame !== lastFrameRef) {
+                    lastFrameRef = frame
+                    try {
+                        val header = "--$boundary\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.size}\r\n\r\n"
+                        out.write(header.toByteArray(Charsets.UTF_8))
+                        out.write(frame)
+                        out.write("\r\n".toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    } catch (e: Exception) {
+                        disconnected = true; break
+                    }
+                } else {
+                    Thread.sleep(2) // espera mínima si no hay frame nuevo
                 }
             }
         }
 
         private fun serveIndex() {
             val out = output ?: return
+            val audioPort = port + 1
             val html = """<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -125,17 +118,16 @@ class MjpegHttpServer(private val port: Int) {
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;color:#fff;font-family:system-ui,sans-serif}
-    h1{font-size:20px;margin-bottom:16px;color:#4fc3f7;letter-spacing:1px}
+    h1{font-size:20px;margin-bottom:12px;color:#4fc3f7}
     #wrap{position:relative;width:100%;max-width:1280px}
     canvas{width:100%;height:auto;display:block;border:1px solid #222;background:#111}
     #hud{position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.6);padding:4px 10px;border-radius:6px;font-size:13px;color:#4CAF50;font-weight:bold}
-    #controls{display:flex;gap:12px;margin-top:14px;align-items:center;flex-wrap:wrap;justify-content:center}
-    select,button{padding:8px 14px;border-radius:6px;border:none;font-size:14px;cursor:pointer}
-    select{background:#1e1e1e;color:#fff;border:1px solid #333}
-    button{background:#4CAF50;color:#fff;font-weight:bold}
-    button:hover{background:#43A047}
+    #bar{display:flex;gap:10px;margin-top:12px;align-items:center;flex-wrap:wrap;justify-content:center}
+    button{padding:8px 16px;border-radius:6px;border:none;font-size:14px;cursor:pointer;background:#4CAF50;color:#fff;font-weight:bold}
+    button:hover{background:#388E3C}
+    #audioBtn{background:#1565C0}
+    #audioBtn:hover{background:#0D47A1}
     #status{font-size:12px;color:#aaa;margin-top:8px}
-    a{color:#4af;margin-top:10px;font-size:13px}
   </style>
 </head>
 <body>
@@ -144,59 +136,65 @@ class MjpegHttpServer(private val port: Int) {
     <canvas id="cv"></canvas>
     <div id="hud">FPS: <span id="fps">--</span></div>
   </div>
-  <div id="controls">
-    <label style="color:#aaa;font-size:13px">Ancho de banda:</label>
-    <select id="bw">
-      <option value="50000">50 Mbps</option>
-      <option value="100000">100 Mbps</option>
-      <option value="200000" selected>200 Mbps</option>
-      <option value="400000">400 Mbps</option>
-      <option value="600000">600 Mbps (máximo)</option>
-    </select>
-    <button onclick="applyBw()">Aplicar</button>
-    <a href="/snapshot" target="_blank">📸 Foto</a>
+  <div id="bar">
+    <button onclick="window.open('/snapshot','_blank')">📸 Foto</button>
+    <button id="audioBtn" onclick="toggleAudio()">🔈 Audio OFF</button>
   </div>
   <div id="status">Conectando...</div>
-
 <script>
   const canvas = document.getElementById('cv');
-  const ctx = canvas.getContext('2d');
-  const fpsEl = document.getElementById('fps');
-  const statusEl = document.getElementById('status');
-  let frameCount = 0, lastFpsTime = Date.now(), running = true;
-
-  function applyBw() {
-    const bw = document.getElementById('bw').value;
-    fetch('/config?bw=' + bw).catch(()=>{});
-  }
+  const ctx    = canvas.getContext('2d');
+  const fpsEl  = document.getElementById('fps');
+  const status = document.getElementById('status');
+  const audioBtn = document.getElementById('audioBtn');
+  let frameCount = 0, lastFpsTime = Date.now();
+  let audioCtx = null, audioPlaying = false;
 
   function nextFrame() {
-    if (!running) return;
     const img = new Image();
-    const url = '/frame?t=' + Date.now();
-    img.onload = function() {
+    img.onload = () => {
       if (canvas.width !== img.naturalWidth) {
         canvas.width = img.naturalWidth;
         canvas.height = img.naturalHeight;
       }
       ctx.drawImage(img, 0, 0);
-      URL.revokeObjectURL(img.src.startsWith('blob') ? img.src : '');
-
       frameCount++;
       const now = Date.now();
       if (now - lastFpsTime >= 1000) {
         fpsEl.textContent = frameCount;
-        frameCount = 0;
-        lastFpsTime = now;
+        frameCount = 0; lastFpsTime = now;
       }
-      statusEl.textContent = '✅ Transmitiendo';
+      status.textContent = '✅ Transmitiendo';
       requestAnimationFrame(nextFrame);
     };
-    img.onerror = function() {
-      statusEl.textContent = '⚠️ Reconectando...';
-      setTimeout(nextFrame, 500);
-    };
-    img.src = url;
+    img.onerror = () => { status.textContent = '⚠️ Reconectando...'; setTimeout(nextFrame, 500); };
+    img.src = '/frame?t=' + Date.now();
+  }
+
+  async function toggleAudio() {
+    if (audioPlaying) {
+      audioCtx?.close(); audioCtx = null; audioPlaying = false;
+      audioBtn.textContent = '🔈 Audio OFF'; return;
+    }
+    try {
+      audioCtx = new AudioContext({ sampleRate: 44100 });
+      const ws  = new WebSocket('ws://' + location.hostname + ':' + $audioPort);
+      ws.binaryType = 'arraybuffer';
+      let headerSkipped = false;
+      ws.onmessage = async (e) => {
+        let data = e.data;
+        if (!headerSkipped) { headerSkipped = true; data = data.slice(44); }
+        if (data.byteLength === 0) return;
+        const buf    = audioCtx.createBuffer(1, data.byteLength / 2, 44100);
+        const pcm    = new Int16Array(data);
+        const float  = buf.getChannelData(0);
+        for (let i = 0; i < pcm.length; i++) float[i] = pcm[i] / 32768;
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf; src.connect(audioCtx.destination); src.start();
+      };
+      audioPlaying = true;
+      audioBtn.textContent = '🔊 Audio ON';
+    } catch(e) { status.textContent = 'Error audio: ' + e.message; }
   }
 
   nextFrame();
