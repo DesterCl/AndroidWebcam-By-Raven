@@ -124,9 +124,8 @@ class MjpegHttpServer(private val port: Int) {
     #hud{position:absolute;top:8px;left:8px;background:rgba(0,0,0,0.6);padding:4px 10px;border-radius:6px;font-size:13px;color:#4CAF50;font-weight:bold}
     #bar{display:flex;gap:10px;margin-top:12px;align-items:center;flex-wrap:wrap;justify-content:center}
     button{padding:8px 16px;border-radius:6px;border:none;font-size:14px;cursor:pointer;background:#4CAF50;color:#fff;font-weight:bold}
-    button:hover{background:#388E3C}
+    button:hover{opacity:0.85}
     #audioBtn{background:#1565C0}
-    #audioBtn:hover{background:#0D47A1}
     #status{font-size:12px;color:#aaa;margin-top:8px}
   </style>
 </head>
@@ -138,17 +137,18 @@ class MjpegHttpServer(private val port: Int) {
   </div>
   <div id="bar">
     <button onclick="window.open('/snapshot','_blank')">📸 Foto</button>
-    <button id="audioBtn" onclick="toggleAudio()">🔈 Audio OFF</button>
+    <button id="audioBtn" onclick="toggleAudio()">🔈 Activar audio</button>
   </div>
   <div id="status">Conectando...</div>
+  <audio id="aud" style="display:none"></audio>
 <script>
-  const canvas = document.getElementById('cv');
-  const ctx    = canvas.getContext('2d');
-  const fpsEl  = document.getElementById('fps');
-  const status = document.getElementById('status');
+  const canvas   = document.getElementById('cv');
+  const ctx      = canvas.getContext('2d');
+  const fpsEl    = document.getElementById('fps');
+  const statusEl = document.getElementById('status');
+  const audioEl  = document.getElementById('aud');
   const audioBtn = document.getElementById('audioBtn');
-  let frameCount = 0, lastFpsTime = Date.now();
-  let audioCtx = null, audioPlaying = false;
+  let frameCount = 0, lastFpsTime = Date.now(), audioOn = false;
 
   function nextFrame() {
     const img = new Image();
@@ -164,43 +164,39 @@ class MjpegHttpServer(private val port: Int) {
         fpsEl.textContent = frameCount;
         frameCount = 0; lastFpsTime = now;
       }
-      status.textContent = '✅ Transmitiendo';
+      statusEl.textContent = '✅ Transmitiendo';
       requestAnimationFrame(nextFrame);
     };
-    img.onerror = () => { status.textContent = '⚠️ Reconectando...'; setTimeout(nextFrame, 500); };
+    img.onerror = () => {
+      statusEl.textContent = '⚠️ Reconectando...';
+      setTimeout(nextFrame, 500);
+    };
     img.src = '/frame?t=' + Date.now();
   }
 
-  async function toggleAudio() {
-    if (audioPlaying) {
-      audioCtx?.close(); audioCtx = null; audioPlaying = false;
-      audioBtn.textContent = '🔈 Audio OFF'; return;
-    }
-    try {
-      audioCtx = new AudioContext({ sampleRate: 44100 });
-      const ws  = new WebSocket('ws://' + location.hostname + ':' + $audioPort);
-      ws.binaryType = 'arraybuffer';
-      let headerSkipped = false;
-      ws.onmessage = async (e) => {
-        let data = e.data;
-        if (!headerSkipped) { headerSkipped = true; data = data.slice(44); }
-        if (data.byteLength === 0) return;
-        const buf    = audioCtx.createBuffer(1, data.byteLength / 2, 44100);
-        const pcm    = new Int16Array(data);
-        const float  = buf.getChannelData(0);
-        for (let i = 0; i < pcm.length; i++) float[i] = pcm[i] / 32768;
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf; src.connect(audioCtx.destination); src.start();
-      };
-      audioPlaying = true;
+  function toggleAudio() {
+    if (audioOn) {
+      audioEl.pause();
+      audioEl.src = '';
+      audioOn = false;
+      audioBtn.textContent = '🔈 Activar audio';
+    } else {
+      audioEl.src = 'http://' + location.hostname + ':$audioPort/audio';
+      audioEl.play().catch(e => statusEl.textContent = 'Error audio: ' + e.message);
+      audioOn = true;
       audioBtn.textContent = '🔊 Audio ON';
-    } catch(e) { status.textContent = 'Error audio: ' + e.message; }
+    }
   }
 
   nextFrame();
 </script>
 </body>
 </html>"""
+            val bytes = html.toByteArray(Charsets.UTF_8)
+            out.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
+            out.write(bytes)
+            out.flush()
+        }
             val bytes = html.toByteArray(Charsets.UTF_8)
             out.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
             out.write(bytes)
