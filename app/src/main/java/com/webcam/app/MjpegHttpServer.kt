@@ -88,7 +88,6 @@ class MjpegHttpServer(private val port: Int) {
             var lastFrameRef: ByteArray? = null
             while (!disconnected && isRunning) {
                 val frame = latestFrame.get()
-                // Solo enviar si hay un frame NUEVO — evita el sleep artificial
                 if (frame != null && frame !== lastFrameRef) {
                     lastFrameRef = frame
                     try {
@@ -101,7 +100,7 @@ class MjpegHttpServer(private val port: Int) {
                         disconnected = true; break
                     }
                 } else {
-                    Thread.sleep(2) // espera mínima si no hay frame nuevo
+                    Thread.sleep(2)
                 }
             }
         }
@@ -130,14 +129,14 @@ class MjpegHttpServer(private val port: Int) {
   </style>
 </head>
 <body>
-  <h1>📷 AndroidWebcam</h1>
+  <h1>AndroidWebcam</h1>
   <div id="wrap">
     <canvas id="cv"></canvas>
     <div id="hud">FPS: <span id="fps">--</span></div>
   </div>
   <div id="bar">
-    <button onclick="window.open('/snapshot','_blank')">📸 Foto</button>
-    <button id="audioBtn" onclick="toggleAudio()">🔈 Activar audio</button>
+    <button onclick="window.open('/snapshot','_blank')">Foto</button>
+    <button id="audioBtn" onclick="toggleAudio()">Activar audio</button>
   </div>
   <div id="status">Conectando...</div>
   <audio id="aud" style="display:none"></audio>
@@ -149,6 +148,7 @@ class MjpegHttpServer(private val port: Int) {
   const audioEl  = document.getElementById('aud');
   const audioBtn = document.getElementById('audioBtn');
   let frameCount = 0, lastFpsTime = Date.now(), audioOn = false;
+  const AUDIO_PORT = $audioPort;
 
   function nextFrame() {
     const img = new Image();
@@ -164,11 +164,11 @@ class MjpegHttpServer(private val port: Int) {
         fpsEl.textContent = frameCount;
         frameCount = 0; lastFpsTime = now;
       }
-      statusEl.textContent = '✅ Transmitiendo';
+      statusEl.textContent = 'Transmitiendo';
       requestAnimationFrame(nextFrame);
     };
     img.onerror = () => {
-      statusEl.textContent = '⚠️ Reconectando...';
+      statusEl.textContent = 'Reconectando...';
       setTimeout(nextFrame, 500);
     };
     img.src = '/frame?t=' + Date.now();
@@ -179,12 +179,12 @@ class MjpegHttpServer(private val port: Int) {
       audioEl.pause();
       audioEl.src = '';
       audioOn = false;
-      audioBtn.textContent = '🔈 Activar audio';
+      audioBtn.textContent = 'Activar audio';
     } else {
-      audioEl.src = 'http://' + location.hostname + ':$audioPort/audio';
-      audioEl.play().catch(e => statusEl.textContent = 'Error audio: ' + e.message);
+      audioEl.src = 'http://' + location.hostname + ':' + AUDIO_PORT + '/audio';
+      audioEl.play().catch(e => { statusEl.textContent = 'Error audio: ' + e.message; });
       audioOn = true;
-      audioBtn.textContent = '🔊 Audio ON';
+      audioBtn.textContent = 'Audio ON';
     }
   }
 
@@ -192,11 +192,6 @@ class MjpegHttpServer(private val port: Int) {
 </script>
 </body>
 </html>"""
-            val bytes = html.toByteArray(Charsets.UTF_8)
-            out.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
-            out.write(bytes)
-            out.flush()
-        }
             val bytes = html.toByteArray(Charsets.UTF_8)
             out.write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\n\r\n".toByteArray(Charsets.UTF_8))
             out.write(bytes)
