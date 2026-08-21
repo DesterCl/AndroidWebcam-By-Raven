@@ -22,7 +22,7 @@
         android:text="Calidad de video" android:textColor="#CCCCCC" android:textSize="13sp"
         android:layout_marginBottom="4dp"/>
     <Spinner android:id="@+id/spinnerQuality" android:layout_width="match_parent"
-        android:layout_height="48dp" android:background="#2A2A2A" android:layout_marginBottom="20dp"/>
+        android:layout_height="48dp" android:background="#2A2A2A" android:layout_marginBottom="16dp"/>
 
     <TextView android:id="@+id/tvZoom" android:layout_width="match_parent"
         android:layout_height="wrap_content" android:text="Zoom: 1.0x"
@@ -32,28 +32,35 @@
         android:layout_height="wrap_content" android:layout_marginBottom="16dp"
         android:visibility="gone"/>
 
-    <!-- Fila: Girar + Flash -->
+    <!-- Fila 1: Girar + Flash -->
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center" android:layout_marginBottom="10dp">
+        android:orientation="horizontal" android:layout_marginBottom="8dp">
       <Button android:id="@+id/btnRotate" android:layout_width="0dp"
           android:layout_height="48dp" android:layout_weight="1"
-          android:text="🔄 Girar 90°" android:textSize="13sp"
-          android:backgroundTint="#1565C0" android:textColor="#FFFFFF" android:layout_marginEnd="8dp"/>
+          android:text="🔄 Girar 90°" android:textSize="12sp"
+          android:backgroundTint="#1565C0" android:textColor="#FFFFFF" android:layout_marginEnd="6dp"/>
       <Button android:id="@+id/btnFlash" android:layout_width="0dp"
           android:layout_height="48dp" android:layout_weight="1"
-          android:text="🔦 Flash OFF" android:textSize="13sp"
-          android:backgroundTint="#E65100" android:textColor="#FFFFFF" android:visibility="gone"/>
+          android:text="🔦 Flash OFF" android:textSize="12sp"
+          android:backgroundTint="#E65100" android:textColor="#FFFFFF"
+          android:visibility="gone"/>
     </LinearLayout>
+
+    <!-- Fila 2: Audio -->
+    <Button android:id="@+id/btnAudio" android:layout_width="match_parent"
+        android:layout_height="48dp" android:text="🎙️ Audio OFF" android:textSize="14sp"
+        android:backgroundTint="#6A1B9A" android:textColor="#FFFFFF"
+        android:layout_marginBottom="8dp"/>
 
     <!-- Botón cámara -->
     <Button android:id="@+id/btnToggle" android:layout_width="match_parent"
         android:layout_height="56dp" android:text="Iniciar cámara" android:textSize="16sp"
-        android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:layout_marginBottom="10dp"/>
+        android:backgroundTint="#4CAF50" android:textColor="#FFFFFF" android:layout_marginBottom="8dp"/>
 
     <!-- Botón pantalla -->
     <Button android:id="@+id/btnScreenToggle" android:layout_width="match_parent"
         android:layout_height="48dp" android:text="📺 Transmitir pantalla" android:textSize="14sp"
-        android:backgroundTint="#6A1B9A" android:textColor="#FFFFFF" android:layout_marginBottom="20dp"/>
+        android:backgroundTint="#37474F" android:textColor="#FFFFFF" android:layout_marginBottom="20dp"/>
 
     <TextView android:id="@+id/tvStatus" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:text="🔴 Detenido"
@@ -64,13 +71,13 @@
     <TextView android:id="@+id/tvOrientation" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:text="📱 Vertical"
         android:textSize="13sp" android:textColor="#AAAAAA" android:layout_marginBottom="6dp"/>
-    <TextView android:id="@+id/tvUrl" android:layout_width="wrap_content"
-        android:layout_height="wrap_content" android:textSize="12sp"
+    <TextView android:id="@+id/tvUrl" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:textSize="11sp"
         android:textColor="#4FC3F7" android:textIsSelectable="true"
         android:visibility="gone" android:layout_marginTop="6dp"/>
     <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
         android:text="📌 Abre la URL en tu PC con OBS o en el navegador"
         android:textSize="11sp" android:textColor="#666666"
-        android:gravity="center" android:layout_marginTop="24dp"/>
+        android:gravity="center" android:layout_marginTop="20dp"/>
   </LinearLayout>
 </ScrollView>
