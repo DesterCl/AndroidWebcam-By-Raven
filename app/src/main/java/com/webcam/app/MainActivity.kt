@@ -1,32 +1,40 @@
 package com.webcam.app
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
-import android.util.DisplayMetrics
+import android.os.IBinder
+import android.util.Log
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.pedro.encoder.input.video.CameraHelper
+import com.pedro.encoder.input.video.CameraOpenException
+import com.pedro.library.rtsp.RtspCamera2
+import com.pedro.library.util.streamclient.RtspStreamClient
+import com.pedro.rtsp.rtsp.VideoCodec
+import java.net.InetAddress
+import java.net.NetworkInterface
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
-    private lateinit var camStream: CameraStreamManager
-    private lateinit var screenCapture: ScreenCaptureManager
-    private lateinit var audioStream: AudioStreamManager
-    private lateinit var server: MjpegHttpServer
+    private lateinit var rtspCamera: RtspCamera2
+    private lateinit var surfaceView: SurfaceView
     private lateinit var btnToggle: Button
     private lateinit var btnRotate: Button
     private lateinit var btnFlash: Button
-    private lateinit var btnScreenToggle: Button
     private lateinit var btnAudio: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvUrl: TextView
@@ -36,106 +44,243 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var spinnerCamera: Spinner
     private lateinit var seekZoom: SeekBar
     private lateinit var tvZoom: TextView
+
     private lateinit var sensorMgr: SensorManager
     private var accelerometer: Sensor? = null
     private var deviceRotation = 0
+
     private var streaming = false
-    private var screenStreaming = false
     private var audioEnabled = false
     private var flashOn = false
-    private val PORT = 8080
-    private val AUDIO_PORT = 8081
-    private val REQ_SCREEN = 200
+    private var manualRotationOffset = 0
+    private var currentCameraFacing = CameraHelper.Facing.BACK
+
+    private val RTSP_PORT = 1935
+    private val cameras = mutableListOf<Pair<String, CameraHelper.Facing>>()
+
+    // Resoluciones disponibles
+    private val resolutions = listOf(
+        Triple("4K (3840x2160)",   3840, 2160),
+        Triple("2K (2560x1440)",   2560, 1440),
+        Triple("Full HD (1920x1080)", 1920, 1080),
+        Triple("HD (1280x720)",    1280, 720),
+        Triple("480p (640x480)",    640,  480)
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        btnToggle       = findViewById(R.id.btnToggle)
-        btnRotate       = findViewById(R.id.btnRotate)
-        btnFlash        = findViewById(R.id.btnFlash)
-        btnScreenToggle = findViewById(R.id.btnScreenToggle)
-        btnAudio        = findViewById(R.id.btnAudio)
-        tvStatus        = findViewById(R.id.tvStatus)
-        tvUrl           = findViewById(R.id.tvUrl)
-        tvFps           = findViewById(R.id.tvFps)
-        tvOrientation   = findViewById(R.id.tvOrientation)
-        spinnerQuality  = findViewById(R.id.spinnerQuality)
-        spinnerCamera   = findViewById(R.id.spinnerCamera)
-        seekZoom        = findViewById(R.id.seekZoom)
-        tvZoom          = findViewById(R.id.tvZoom)
+        surfaceView    = findViewById(R.id.surfaceView)
+        btnToggle      = findViewById(R.id.btnToggle)
+        btnRotate      = findViewById(R.id.btnRotate)
+        btnFlash       = findViewById(R.id.btnFlash)
+        btnAudio       = findViewById(R.id.btnAudio)
+        tvStatus       = findViewById(R.id.tvStatus)
+        tvUrl          = findViewById(R.id.tvUrl)
+        tvFps          = findViewById(R.id.tvFps)
+        tvOrientation  = findViewById(R.id.tvOrientation)
+        spinnerQuality = findViewById(R.id.spinnerQuality)
+        spinnerCamera  = findViewById(R.id.spinnerCamera)
+        seekZoom       = findViewById(R.id.seekZoom)
+        tvZoom         = findViewById(R.id.tvZoom)
 
-        server        = MjpegHttpServer(PORT)
-        audioStream   = AudioStreamManager(AUDIO_PORT)
-        screenCapture = ScreenCaptureManager(this, server) { fps ->
-            runOnUiThread { tvFps.text = "FPS: $fps" }
-        }
-        camStream = CameraStreamManager(
-            context = this, server = server,
-            onFpsUpdate    = { fps -> runOnUiThread { tvFps.text = "FPS: $fps" } },
-            onErrorMessage = { msg -> runOnUiThread {
-                tvStatus.text = "❌ $msg"
-                tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
-            }}
-        )
+        setupSpinners()
+
+        // RtspCamera2: servidor RTSP integrado, H.264 por hardware
+        rtspCamera = RtspCamera2(surfaceView, object : com.pedro.library.base.recording.BaseRecordController.Listener {
+            override fun onStatusChange(status: com.pedro.library.base.recording.RecordController.Status) {}
+        })
+
+        rtspCamera.setReTries(10) // reconectar hasta 10 veces si hay error
+
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {}
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+                if (!rtspCamera.isStreaming) {
+                    rtspCamera.startPreview(currentCameraFacing)
+                }
+            }
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                if (rtspCamera.isStreaming) rtspCamera.stopStream()
+                rtspCamera.stopPreview()
+            }
+        })
 
         sensorMgr     = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorMgr.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
-        setupQualitySpinner()
-        checkPermissions()
+        btnToggle.setOnClickListener { if (streaming) stopStream() else startStream() }
 
-        btnToggle.setOnClickListener       { if (streaming) stopStream() else startStream() }
-        btnRotate.setOnClickListener       { camStream.rotateManual(90) }
-        btnScreenToggle.setOnClickListener { if (screenStreaming) stopScreenStream() else requestScreenCapture() }
+        btnRotate.setOnClickListener {
+            manualRotationOffset = (manualRotationOffset + 90) % 360
+            applyRotation()
+        }
+
         btnFlash.setOnClickListener {
             flashOn = !flashOn
-            camStream.setFlash(flashOn)
+            rtspCamera.enableLantern(flashOn)
             btnFlash.text = if (flashOn) "🔦 Flash ON" else "🔦 Flash OFF"
         }
+
         btnAudio.setOnClickListener {
-            if (!hasMicPermission()) {
+            if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 101)
                 return@setOnClickListener
             }
-            toggleAudio()
+            audioEnabled = !audioEnabled
+            if (audioEnabled) rtspCamera.enableAudio() else rtspCamera.disableAudio()
+            btnAudio.text = if (audioEnabled) "🎙️ Audio ON" else "🎙️ Audio OFF"
         }
 
-        seekZoom.max = 100; seekZoom.progress = 0
+        seekZoom.max = 100
         seekZoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                if (!streaming) return
-                val maxZ = camStream.getMaxZoom().coerceAtLeast(1f)
-                val zoom = 1f + (progress / 100f) * (maxZ - 1f)
-                camStream.setZoom(zoom); tvZoom.text = "Zoom: ${"%.1f".format(zoom)}x"
+            override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
+                if (!fromUser) return
+                val maxZ = rtspCamera.maxZoom
+                val zoom = 1f + (p / 100f) * (maxZ - 1f)
+                rtspCamera.setZoom(zoom)
+                tvZoom.text = "Zoom: ${"%.1f".format(zoom)}x"
             }
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
+
+        checkPermissions()
     }
 
-    private fun hasMicPermission() =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    private fun setupSpinners() {
+        spinnerQuality.adapter = ArrayAdapter(this,
+            android.R.layout.simple_spinner_dropdown_item,
+            resolutions.map { it.first })
+        spinnerQuality.setSelection(2) // Full HD por defecto
 
-    private fun toggleAudio() {
-        audioEnabled = !audioEnabled
-        if (audioEnabled) {
-            audioStream.start()
-            btnAudio.text = "🎙️ Audio ON"
-        } else {
-            audioStream.stop()
-            btnAudio.text = "🎙️ Audio OFF"
+        // Detectar cámaras disponibles
+        cameras.clear()
+        cameras.add(Pair("Trasera (principal)", CameraHelper.Facing.BACK))
+        cameras.add(Pair("Frontal", CameraHelper.Facing.FRONT))
+        spinnerCamera.adapter = ArrayAdapter(this,
+            android.R.layout.simple_spinner_dropdown_item,
+            cameras.map { it.first })
+
+        spinnerCamera.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                currentCameraFacing = cameras[pos].second
+                if (!streaming) {
+                    rtspCamera.stopPreview()
+                    rtspCamera.startPreview(currentCameraFacing)
+                }
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
         }
+    }
+
+    private fun startStream() {
+        if (!hasPerm(Manifest.permission.CAMERA)) {
+            tvStatus.text = "⚠️ Permiso de cámara requerido"
+            return
+        }
+        val (_, w, h) = resolutions[spinnerQuality.selectedItemPosition]
+
+        // Bitrate adaptativo según resolución (en bps)
+        val bitrate = when {
+            w >= 3840 -> 20_000_000
+            w >= 2560 -> 12_000_000
+            w >= 1920 ->  6_000_000
+            w >= 1280 ->  3_000_000
+            else      ->  1_500_000
+        }
+
+        val prepared = if (audioEnabled) {
+            rtspCamera.prepareAudio(128_000, 44100, true) &&
+            rtspCamera.prepareVideo(w, h, 30, bitrate, 0)
+        } else {
+            rtspCamera.disableAudio()
+            rtspCamera.prepareVideo(w, h, 30, bitrate, 0)
+        }
+
+        if (!prepared) {
+            // Fallback a 1080p si la resolución pedida no es soportada
+            val ok = rtspCamera.prepareVideo(1920, 1080, 30, 6_000_000, 0)
+            if (!ok) { tvStatus.text = "❌ No se pudo preparar la cámara"; return }
+        }
+
+        applyRotation()
+
+        // Iniciar servidor RTSP en el puerto configurado
+        rtspCamera.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
+
+        // Iniciar servicio en segundo plano con WakeLock
+        val svcIntent = Intent(this, StreamService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            startForegroundService(svcIntent)
+        else
+            startService(svcIntent)
+
+        val ip = getLocalIp()
+        tvUrl.text = "rtsp://$ip:$RTSP_PORT/stream"
+        tvUrl.visibility = View.VISIBLE
+        tvStatus.text = "🟢 Transmitiendo"
+        tvStatus.setTextColor(getColor(android.R.color.holo_green_dark))
+        btnToggle.text = "Detener"
+        btnFlash.visibility = View.VISIBLE
+        seekZoom.visibility = View.VISIBLE
+        tvZoom.visibility   = View.VISIBLE
+        streaming = true
+        startFpsCounter()
+    }
+
+    private fun stopStream() {
+        rtspCamera.stopStream()
+        stopService(Intent(this, StreamService::class.java))
+        tvUrl.visibility = View.GONE
+        tvStatus.text = "🔴 Detenido"
+        tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
+        btnToggle.text = "Iniciar Stream"
+        tvFps.text = "FPS: --"
+        flashOn = false; btnFlash.text = "🔦 Flash OFF"
+        seekZoom.progress = 0; tvZoom.text = "Zoom: 1.0x"
+        streaming = false
+    }
+
+    private fun applyRotation() {
+        val finalRot = (deviceRotation + manualRotationOffset) % 360
+        rtspCamera.setOrientation(finalRot)
+    }
+
+    private fun startFpsCounter() {
+        val handler = android.os.Handler(mainLooper)
+        val runnable = object : Runnable {
+            override fun run() {
+                if (streaming) {
+                    tvFps.text = "FPS: ${rtspCamera.streamClient.sentVideoFrames}"
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }
+        handler.postDelayed(runnable, 1000)
+    }
+
+    private fun getLocalIp(): String {
+        return try {
+            NetworkInterface.getNetworkInterfaces().toList()
+                .flatMap { it.inetAddresses.toList() }
+                .firstOrNull { !it.isLoopbackAddress && it.hostAddress?.contains(':') == false }
+                ?.hostAddress ?: "?.?.?.?"
+        } catch (e: Exception) { "?.?.?.?" }
     }
 
     override fun onResume() {
         super.onResume()
         accelerometer?.let { sensorMgr.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        if (!rtspCamera.isOnPreview && !streaming)
+            rtspCamera.startPreview(currentCameraFacing)
     }
 
     override fun onPause() {
         super.onPause()
         sensorMgr.unregisterListener(this)
+        // NO detenemos el stream al ir a segundo plano — el servicio lo mantiene vivo
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -148,143 +293,45 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
         if (newRot == deviceRotation) return
         deviceRotation = newRot
-        camStream.setDeviceRotation(deviceRotation)
+        if (streaming) applyRotation()
         val label = when (newRot) {
-            0->"📱 Vertical"; 180->"📱 Invertido"
-            90->"📱 Horizontal ←"; 270->"📱 Horizontal →"; else->"📱 --"
+            0   -> "📱 Vertical"
+            180 -> "📱 Invertido"
+            90  -> "📱 Horizontal ←"
+            270 -> "📱 Horizontal →"
+            else -> "📱 --"
         }
         runOnUiThread { tvOrientation.text = label }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    private fun setupQualitySpinner() {
-        spinnerQuality.adapter = ArrayAdapter(this,
-            android.R.layout.simple_spinner_dropdown_item,
-            arrayOf("4K (3840x2160)", "2K (2560x1440)", "Full HD (1920x1080)", "HD (1280x720)", "480p (640x480)")
-        )
-        spinnerQuality.setSelection(2)
-    }
-
-    private fun populateCameraSpinner() {
-        val cameras = camStream.scanCameras()
-        spinnerCamera.adapter = ArrayAdapter(this,
-            android.R.layout.simple_spinner_dropdown_item, cameras.map { it.label })
-    }
-
-    private fun startStream() {
-        if (screenStreaming) stopScreenStream()
-        val res = listOf(3840 to 2160, 2560 to 1440, 1920 to 1080, 1280 to 720, 640 to 480)
-        val (w, h) = res[spinnerQuality.selectedItemPosition]
-        val cameras = camStream.availableCameras
-        val camId = if (cameras.isNotEmpty() && spinnerCamera.selectedItemPosition < cameras.size)
-            cameras[spinnerCamera.selectedItemPosition].id else null
-        server.start()
-        if (camId != null) camStream.startCameraById(camId, w, h) else camStream.startCamera(w, h, false)
-        runOnUiThread {
-            btnFlash.visibility = if (camStream.hasFlash()) View.VISIBLE else View.GONE
-            val maxZ = camStream.getMaxZoom()
-            seekZoom.visibility = if (maxZ > 1f) View.VISIBLE else View.GONE
-            tvZoom.visibility   = if (maxZ > 1f) View.VISIBLE else View.GONE
-            seekZoom.progress = 0; tvZoom.text = "Zoom: 1.0x"
-            flashOn = false; btnFlash.text = "🔦 Flash OFF"
-        }
-        setStreamingUI(true)
-    }
-
-    private fun stopStream() {
-        camStream.stopCamera(); server.stop()
-        if (audioEnabled) { audioStream.stop(); audioEnabled = false; btnAudio.text = "🎙️ Audio OFF" }
-        runOnUiThread { seekZoom.progress = 0; tvZoom.text = "Zoom: 1.0x"; flashOn = false; btnFlash.text = "🔦 Flash OFF" }
-        setStreamingUI(false)
-    }
-
-    private fun requestScreenCapture() {
-        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        startActivityForResult(mgr.createScreenCaptureIntent(), REQ_SCREEN)
-    }
-
-    @Suppress("DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_SCREEN && resultCode == RESULT_OK && data != null) {
-            if (streaming) stopStream()
-            // Iniciar servicio ANTES de getMediaProjection (requerido en Android 14+)
-            val svcIntent = Intent(this, StreamService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                startForegroundService(svcIntent)
-            else
-                startService(svcIntent)
-            // Pequeña pausa para que el servicio arranque antes de obtener la proyección
-            android.os.Handler(mainLooper).postDelayed({
-                try {
-                    val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                    val projection = mgr.getMediaProjection(resultCode, data)
-                    val dm = DisplayMetrics()
-                    windowManager.defaultDisplay.getMetrics(dm)
-                    server.start()
-                    screenCapture.start(projection, dm.widthPixels, dm.heightPixels, dm.densityDpi)
-                    setScreenStreamingUI(true)
-                } catch (e: Exception) {
-                    tvStatus.text = "❌ Error pantalla: ${e.message}"
-                }
-            }, 300)
-        }
-    }
-
-    private fun stopScreenStream() {
-        screenCapture.stop(); server.stop()
-        stopService(Intent(this, StreamService::class.java))
-        setScreenStreamingUI(false)
-    }
-
-    private fun setStreamingUI(on: Boolean) {
-        streaming = on
-        val ip = NetworkUtils.getLocalIpAddress(this)
-        tvUrl.text = "URL: http://$ip:$PORT  |  Audio: :$AUDIO_PORT"
-        tvUrl.visibility = if (on) View.VISIBLE else View.GONE
-        tvStatus.text = if (on) "🟢 Transmitiendo (cámara)" else "🔴 Detenido"
-        tvStatus.setTextColor(getColor(if (on) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
-        btnToggle.text = if (on) "Detener cámara" else "Iniciar cámara"
-        if (!on) tvFps.text = "FPS: --"
-    }
-
-    private fun setScreenStreamingUI(on: Boolean) {
-        screenStreaming = on
-        val ip = NetworkUtils.getLocalIpAddress(this)
-        tvUrl.text = "URL: http://$ip:$PORT"
-        tvUrl.visibility = if (on) View.VISIBLE else View.GONE
-        tvStatus.text = if (on) "🟢 Transmitiendo (pantalla)" else "🔴 Detenido"
-        tvStatus.setTextColor(getColor(if (on) android.R.color.holo_green_dark else android.R.color.holo_red_dark))
-        btnScreenToggle.text = if (on) "Detener pantalla" else "📺 Transmitir pantalla"
-        if (!on) tvFps.text = "FPS: --"
-    }
+    private fun hasPerm(perm: String) =
+        ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
 
     private fun checkPermissions() {
         val perms = mutableListOf(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
             perms.add(Manifest.permission.POST_NOTIFICATIONS)
-        val missing = perms.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isNotEmpty()) ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
-        else populateCameraSpinner()
+        val missing = perms.filter { !hasPerm(it) }
+        if (missing.isNotEmpty())
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, perms, results)
         when (code) {
-            100 -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) populateCameraSpinner()
-                   else tvStatus.text = "⚠️ Permiso de cámara requerido"
-            101 -> if (results.isNotEmpty() && results[0] == PackageManager.PERMISSION_GRANTED) toggleAudio()
-                   else tvStatus.text = "⚠️ Permiso de micrófono requerido"
+            101 -> if (results.isNotEmpty() && results[0] == PackageManager.PERMISSION_GRANTED) {
+                audioEnabled = true
+                rtspCamera.enableAudio()
+                btnAudio.text = "🎙️ Audio ON"
+            }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         if (streaming) stopStream()
-        if (screenStreaming) stopScreenStream()
-        if (audioEnabled) audioStream.stop()
+        rtspCamera.stopPreview()
     }
 }
