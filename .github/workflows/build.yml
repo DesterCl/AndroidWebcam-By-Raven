@@ -30,21 +30,13 @@ jobs:
           echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
 
-      - name: Aceptar licencias
-        run: |
-          mkdir -p $HOME/android-sdk/licenses
-          cat > $HOME/android-sdk/licenses/android-sdk-license << 'EOF'
-          24333f8a63b6825ea9c5514f83c2829b004d1fee
-          d56f5187479451eabf01fb78af6dfcb131a6481e
-          8933bad161af4178b1185d1a37fbf41ea5269c55
-          EOF
-          cat > $HOME/android-sdk/licenses/android-sdk-preview-license << 'EOF'
-          84831b9409646a918e30573bab4c9c91346d8abd
-          EOF
+       - name: Buscar APK generado
+        run: find . -name "*.apk" 2>/dev/null
+
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
           name: AndroidWebcam-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: "**/*.apk"
           retention-days: 30
           if-no-files-found: error
