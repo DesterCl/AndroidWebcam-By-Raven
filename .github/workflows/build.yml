@@ -33,4 +33,28 @@ jobs:
       - name: Aceptar licencias
         run: |
           mkdir -p $HOME/android-sdk/licenses
-          cat > $HOME/android-sdk/licenses/android-sdk-license <
+          tee $HOME/android-sdk/licenses/android-sdk-license > /dev/null << ENDOFFILE
+          24333f8a63b6825ea9c5514f83c2829b004d1fee
+          d56f5187479451eabf01fb78af6dfcb131a6481e
+          8933bad161af4178b1185d1a37fbf41ea5269c55
+          ENDOFFILE
+          tee $HOME/android-sdk/licenses/android-sdk-preview-license > /dev/null << ENDOFFILE
+          84831b9409646a918e30573bab4c9c91346d8abd
+          ENDOFFILE
+
+      - name: Instalar componentes SDK
+        run: |
+          sdkmanager --sdk_root=$HOME/android-sdk "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+
+      - name: Dar permisos a Gradle
+        run: chmod +x gradlew
+
+      - name: Compilar APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Buscar APK generado
+        run: find . -name "*.apk" 2>/dev/null
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v4
+        with:
