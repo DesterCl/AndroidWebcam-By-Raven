@@ -44,7 +44,7 @@ jobs:
 
       - name: Instalar componentes SDK
         run: |
-          sdkmanager --sdk_root=$HOME/android-sdk "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          sdkmanager --sdk_root=$HOME/android-sdk "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Dar permisos a Gradle
         run: chmod +x gradlew
