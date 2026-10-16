@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         seekZoom       = findViewById(R.id.seekZoom)
         tvZoom         = findViewById(R.id.tvZoom)
 
-        rtspCamera = RtspCamera2(this, this)
+        rtspCamera = RtspCamera2(surfaceView, this)
         rtspCamera.getStreamClient().setReTries(10)
 
         surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
