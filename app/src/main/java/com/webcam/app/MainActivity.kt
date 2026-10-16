@@ -9,8 +9,6 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.Bundle
-import android.view.SurfaceHolder
-import android.view.SurfaceView
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -23,7 +21,6 @@ import com.pedro.library.rtsp.RtspCamera2
 class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
 
     private lateinit var rtspCamera: RtspCamera2
-    private lateinit var surfaceView: SurfaceView
     private lateinit var btnToggle: Button
     private lateinit var btnRotate: Button
     private lateinit var btnFlash: Button
@@ -77,7 +74,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        surfaceView    = findViewById(R.id.surfaceView)
         btnToggle      = findViewById(R.id.btnToggle)
         btnRotate      = findViewById(R.id.btnRotate)
         btnFlash       = findViewById(R.id.btnFlash)
@@ -91,19 +87,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         seekZoom       = findViewById(R.id.seekZoom)
         tvZoom         = findViewById(R.id.tvZoom)
 
-        rtspCamera = RtspCamera2(surfaceView, this)
+        rtspCamera = RtspCamera2(this, this)
         rtspCamera.getStreamClient().setReTries(10)
-
-        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {}
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
-                if (!rtspCamera.isOnPreview) rtspCamera.startPreview()
-            }
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                if (rtspCamera.isStreaming) rtspCamera.stopStream()
-                if (rtspCamera.isOnPreview) rtspCamera.stopPreview()
-            }
-        })
 
         setupSpinners()
         sensorMgr     = getSystemService(SENSOR_SERVICE) as SensorManager
@@ -194,7 +179,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         else startService(svc)
 
         val ip = getLocalIp()
-        tvUrl.text = "rtsp://$ip:$RTSP_PORT/stream"
+        tvUrl.text          = "rtsp://$ip:$RTSP_PORT/stream"
         tvUrl.visibility    = View.VISIBLE
         tvStatus.text       = "🟡 Iniciando..."
         tvStatus.setTextColor(getColor(android.R.color.holo_orange_light))
@@ -214,19 +199,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         btnToggle.text      = "Iniciar Stream"
         tvFps.text          = "FPS: --"
         btnFlash.visibility = View.GONE
-        flashOn = false
+        flashOn             = false
         btnFlash.text       = "🔦 Flash OFF"
         seekZoom.progress   = 0
         tvZoom.text         = "Zoom: 1.0x"
-        streaming = false
+        streaming           = false
     }
 
     private fun toggleAudio() {
-        audioEnabled = !audioEnabled
+        audioEnabled  = !audioEnabled
         btnAudio.text = if (audioEnabled) "🎙️ Audio ON" else "🎙️ Audio OFF"
     }
-
-    private fun applyRotation() {}
 
     private fun getLocalIp(): String {
         return try {
@@ -240,7 +223,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
     override fun onResume() {
         super.onResume()
         accelerometer?.let { sensorMgr.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
-        if (!rtspCamera.isOnPreview && !streaming) rtspCamera.startPreview()
     }
 
     override fun onPause() {
@@ -259,8 +241,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         if (newRot == deviceRotation) return
         deviceRotation = newRot
         val label = when (newRot) {
-            0->"📱 Vertical"; 180->"📱 Invertido"
-            90->"📱 Horizontal ←"; 270->"📱 Horizontal →"; else->"📱 --"
+            0   -> "📱 Vertical"
+            180 -> "📱 Invertido"
+            90  -> "📱 Horizontal ←"
+            270 -> "📱 Horizontal →"
+            else -> "📱 --"
         }
         runOnUiThread { tvOrientation.text = label }
     }
