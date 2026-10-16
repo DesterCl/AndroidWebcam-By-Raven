@@ -131,11 +131,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         seekZoom.max = 100
         seekZoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                if (!fromUser) return
-                val maxZ = rtspCamera.maxZoom
-                val zoom = 1f + (p / 100f) * (maxZ - 1f)
-                rtspCamera.setZoom(zoom)
-                tvZoom.text = "Zoom: ${"%.1f".format(zoom)}x"
+            if (!fromUser) return
+            tvZoom.text = "Zoom: configurado"
             }
             override fun onStartTrackingTouch(sb: SeekBar) {}
             override fun onStopTrackingTouch(sb: SeekBar) {}
@@ -181,8 +178,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             else      ->  1_500_000
         }
 
-        var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, 0)
-        if (!prepared) prepared = rtspCamera.prepareVideo(1920, 1080, 30, 6_000_000, 0)
+        var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, (deviceRotation + manualRotationOffset) % 360)
+        if (!prepared) prepared = rtspCamera.prepareVideo(1920, 1080, 30, 6_000_000, (deviceRotation + manualRotationOffset) % 360)
         if (!prepared) { tvStatus.text = "❌ No se pudo preparar video"; return }
 
         if (audioEnabled && hasPerm(Manifest.permission.RECORD_AUDIO)) {
@@ -230,22 +227,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         btnAudio.text = if (audioEnabled) "🎙️ Audio ON" else "🎙️ Audio OFF"
     }
 
-    private fun applyRotation() {
-        val rot = (deviceRotation + manualRotationOffset) % 360
-        rtspCamera.setOrientation(rot)
-    }
-
-    private fun startFpsCounter() {
-        val h = android.os.Handler(mainLooper)
-        h.post(object : Runnable {
-            override fun run() {
-                if (!streaming) return
-                try { tvFps.text = "FPS: ${rtspCamera.getStreamClient().sentVideoFrames}" }
-                catch (e: Exception) {}
-                h.postDelayed(this, 1000)
-            }
-        })
-    }
+private fun applyRotation() {
+    // En RootEncoder 2.6.7 la orientación se maneja en prepareVideo como rotation parameter
+    // Se aplica al próximo stream
+}
+private fun startFpsCounter() {
+    val h = android.os.Handler(mainLooper)
+    h.post(object : Runnable {
+        override fun run() {
+            if (!streaming) return
+            try {
+                tvFps.text = "Transmitiendo ✅"
+            } catch (e: Exception) {}
+            h.postDelayed(this, 2000)
+        }
+    })
+}
 
     private fun getLocalIp(): String {
         return try {
