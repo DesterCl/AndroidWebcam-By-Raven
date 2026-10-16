@@ -152,52 +152,52 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
       if (!hasPerm(Manifest.permission.CAMERA)) {
           tvStatus.text = "⚠️ Permiso de cámara requerido"
          return
-    }
-    try {
-        val (_, w, h) = resolutions[spinnerQuality.selectedItemPosition]
-        val bitrate = when {
+     }
+      try {
+          val (_, w, h) = resolutions[spinnerQuality.selectedItemPosition]
+          val bitrate = when {
             w >= 3840 -> 20_000_000
             w >= 2560 -> 12_000_000
             w >= 1920 ->  6_000_000
             w >= 1280 ->  3_000_000
             else      ->  1_500_000
+          }
+          val rot = (deviceRotation + manualRotationOffset) % 360
+
+          // Intentar con resolución seleccionada, fallback a 720p
+          var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, rot)
+          if (!prepared) prepared = rtspCamera.prepareVideo(1280, 720, 30, 3_000_000, rot)
+          if (!prepared) {
+              tvStatus.text = "❌ No se pudo preparar video"
+              return
+          }
+
+          rtspCamera.disableAudio()
+
+          rtspCamera.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
+
+          val svc = Intent(this, StreamService::class.java)
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
+          else startService(svc)
+
+          val ip = getLocalIp()
+          tvUrl.text          = "rtsp://$ip:$RTSP_PORT/stream"
+          tvUrl.visibility    = View.VISIBLE
+          tvStatus.text       = "🟡 Iniciando..."
+          tvStatus.setTextColor(getColor(android.R.color.holo_orange_light))
+          btnToggle.text      = "Detener"
+          btnFlash.visibility = View.VISIBLE
+          seekZoom.visibility = View.VISIBLE
+          tvZoom.visibility   = View.VISIBLE
+          streaming = true
+
+      } catch (e: Exception) {
+          tvStatus.text = "❌ ${e.message}"
+          streaming = false
         }
-        val rot = (deviceRotation + manualRotationOffset) % 360
-
-        // Intentar con resolución seleccionada, fallback a 720p
-        var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, rot)
-        if (!prepared) prepared = rtspCamera.prepareVideo(1280, 720, 30, 3_000_000, rot)
-        if (!prepared) {
-            tvStatus.text = "❌ No se pudo preparar video"
-            return
-        }
-
-        rtspCamera.disableAudio()
-
-        rtspCamera.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
-
-        val svc = Intent(this, StreamService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
-        else startService(svc)
-
-        val ip = getLocalIp()
-        tvUrl.text          = "rtsp://$ip:$RTSP_PORT/stream"
-        tvUrl.visibility    = View.VISIBLE
-        tvStatus.text       = "🟡 Iniciando..."
-        tvStatus.setTextColor(getColor(android.R.color.holo_orange_light))
-        btnToggle.text      = "Detener"
-        btnFlash.visibility = View.VISIBLE
-        seekZoom.visibility = View.VISIBLE
-        tvZoom.visibility   = View.VISIBLE
-        streaming = true
-
-    } catch (e: Exception) {
-        tvStatus.text = "❌ ${e.message}"
-        streaming = false
-    }
-  }
-        btnAudio.text = if (audioEnabled) "🎙️ Audio ON" else "🎙️ Audio OFF"
-    }
+      }
+          btnAudio.text = if (audioEnabled) "🎙️ Audio ON" else "🎙️ Audio OFF"
+      }
 
     private fun getLocalIp(): String {
         return try {
@@ -236,7 +236,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             else -> "📱 --"
         }
         runOnUiThread { tvOrientation.text = label }
-    }
+     }
 
     override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
 
