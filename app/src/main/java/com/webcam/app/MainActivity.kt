@@ -148,11 +148,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         }
     }
 
-    private fun startStream() {
-        if (!hasPerm(Manifest.permission.CAMERA)) {
-            tvStatus.text = "⚠️ Permiso de cámara requerido"
-            return
-        }
+     private fun startStream() {
+      if (!hasPerm(Manifest.permission.CAMERA)) {
+          tvStatus.text = "⚠️ Permiso de cámara requerido"
+         return
+    }
+    try {
         val (_, w, h) = resolutions[spinnerQuality.selectedItemPosition]
         val bitrate = when {
             w >= 3840 -> 20_000_000
@@ -162,15 +163,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             else      ->  1_500_000
         }
         val rot = (deviceRotation + manualRotationOffset) % 360
-        var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, rot)
-        if (!prepared) prepared = rtspCamera.prepareVideo(1920, 1080, 30, 6_000_000, rot)
-        if (!prepared) { tvStatus.text = "❌ No se pudo preparar video"; return }
 
-        if (audioEnabled && hasPerm(Manifest.permission.RECORD_AUDIO)) {
-            rtspCamera.prepareAudio(128_000, 44100, true)
-        } else {
-            rtspCamera.disableAudio()
+        // Intentar con resolución seleccionada, fallback a 720p
+        var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, rot)
+        if (!prepared) prepared = rtspCamera.prepareVideo(1280, 720, 30, 3_000_000, rot)
+        if (!prepared) {
+            tvStatus.text = "❌ No se pudo preparar video"
+            return
         }
+
+        rtspCamera.disableAudio()
 
         rtspCamera.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
 
@@ -188,26 +190,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         seekZoom.visibility = View.VISIBLE
         tvZoom.visibility   = View.VISIBLE
         streaming = true
-    }
 
-    private fun stopStream() {
-        if (rtspCamera.isStreaming) rtspCamera.stopStream()
-        stopService(Intent(this, StreamService::class.java))
-        tvUrl.visibility    = View.GONE
-        tvStatus.text       = "🔴 Detenido"
-        tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
-        btnToggle.text      = "Iniciar Stream"
-        tvFps.text          = "FPS: --"
-        btnFlash.visibility = View.GONE
-        flashOn             = false
-        btnFlash.text       = "🔦 Flash OFF"
-        seekZoom.progress   = 0
-        tvZoom.text         = "Zoom: 1.0x"
-        streaming           = false
+    } catch (e: Exception) {
+        tvStatus.text = "❌ ${e.message}"
+        streaming = false
     }
-
-    private fun toggleAudio() {
-        audioEnabled  = !audioEnabled
+  }
         btnAudio.text = if (audioEnabled) "🎙️ Audio ON" else "🎙️ Audio OFF"
     }
 
