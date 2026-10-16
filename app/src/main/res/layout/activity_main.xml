@@ -3,7 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#121212">
-
+    
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -19,7 +19,7 @@
             android:textStyle="bold"
             android:textColor="#FFFFFF"
             android:layout_marginTop="12dp"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"/>
 
         <TextView
             android:layout_width="wrap_content"
@@ -27,14 +27,14 @@
             android:text="RTSP · H.264 Hardware · Sin límites"
             android:textSize="12sp"
             android:textColor="#AAAAAA"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="12dp"/>
 
         <!-- Vista previa compatible con RtspCamera2 -->
         <com.pedro.library.view.OpenGlView
             android:id="@+id/surfaceView"
             android:layout_width="match_parent"
             android:layout_height="200dp"
-            android:layout_marginBottom="14dp" />
+            android:layout_marginBottom="14dp"/>
 
         <!-- Selector de cámara -->
         <TextView
@@ -43,14 +43,14 @@
             android:text="Cámara"
             android:textColor="#CCCCCC"
             android:textSize="13sp"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"/>
 
         <Spinner
             android:id="@+id/spinnerCamera"
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:background="#2A2A2A"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="12dp"/>
 
         <!-- Selector de calidad -->
         <TextView
@@ -59,14 +59,14 @@
             android:text="Calidad"
             android:textColor="#CCCCCC"
             android:textSize="13sp"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"/>
 
         <Spinner
             android:id="@+id/spinnerQuality"
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:background="#2A2A2A"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="12dp"/>
 
         <!-- Zoom -->
         <TextView
@@ -77,14 +77,14 @@
             android:textColor="#CCCCCC"
             android:textSize="13sp"
             android:layout_marginBottom="4dp"
-            android:visibility="gone" />
+            android:visibility="gone"/>
 
         <SeekBar
             android:id="@+id/seekZoom"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
-            android:visibility="gone" />
+            android:visibility="gone"/>
 
         <!-- Fila de controles -->
         <LinearLayout
@@ -102,7 +102,7 @@
                 android:textSize="13sp"
                 android:backgroundTint="#1565C0"
                 android:textColor="#FFFFFF"
-                android:layout_marginEnd="6dp" />
+                android:layout_marginEnd="6dp"/>
 
             <Button
                 android:id="@+id/btnFlash"
@@ -113,7 +113,7 @@
                 android:textSize="13sp"
                 android:backgroundTint="#E65100"
                 android:textColor="#FFFFFF"
-                android:visibility="gone" />
+                android:visibility="gone"/>
 
         </LinearLayout>
 
@@ -126,7 +126,7 @@
             android:textSize="14sp"
             android:backgroundTint="#4A148C"
             android:textColor="#FFFFFF"
-            android:layout_marginBottom="8dp" />
+            android:layout_marginBottom="8dp"/>
 
         <!-- Iniciar / detener -->
         <Button
@@ -137,7 +137,7 @@
             android:textSize="16sp"
             android:backgroundTint="#2E7D32"
             android:textColor="#FFFFFF"
-            android:layout_marginBottom="16dp" />
+            android:layout_marginBottom="16dp"/>
 
         <!-- Estado -->
         <TextView
@@ -147,7 +147,7 @@
             android:text="🔴 Detenido"
             android:textSize="15sp"
             android:textColor="#FF5555"
-            android:layout_marginBottom="6dp" />
+            android:layout_marginBottom="6dp"/>
 
         <TextView
             android:id="@+id/tvFps"
@@ -156,7 +156,7 @@
             android:text="FPS: --"
             android:textSize="13sp"
             android:textColor="#AAAAAA"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"/>
 
         <TextView
             android:id="@+id/tvOrientation"
@@ -165,7 +165,7 @@
             android:text="📱 Vertical"
             android:textSize="13sp"
             android:textColor="#AAAAAA"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"/>
 
         <TextView
             android:id="@+id/tvUrl"
@@ -175,7 +175,7 @@
             android:textColor="#4FC3F7"
             android:textIsSelectable="true"
             android:visibility="gone"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginBottom="4dp"/>
 
         <TextView
             android:layout_width="match_parent"
@@ -184,7 +184,7 @@
             android:textSize="11sp"
             android:textColor="#555555"
             android:gravity="center"
-            android:layout_marginTop="16dp" />
+            android:layout_marginTop="16dp"/>
         
     </LinearLayout>
 </ScrollView>
