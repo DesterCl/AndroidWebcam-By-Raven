@@ -20,7 +20,7 @@ import com.pedro.library.rtsp.RtspCamera2
 
 class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
 
-    private lateinit var rtspCamera: RtspCamera2
+    private var rtspCamera: RtspCamera2? = null
     private lateinit var btnToggle: Button
     private lateinit var btnRotate: Button
     private lateinit var btnFlash: Button
@@ -51,33 +51,40 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
     )
 
     override fun onConnectionStarted(url: String) {}
-
     override fun onConnectionSuccess() {
         runOnUiThread {
             tvStatus.text = "🟢 Transmitiendo"
             tvStatus.setTextColor(getColor(android.R.color.holo_green_dark))
         }
     }
-
     override fun onConnectionFailed(reason: String) {
         runOnUiThread { tvStatus.text = "❌ Error: $reason" }
-        if (!rtspCamera.getStreamClient().reTry(5000, reason, null)) {
-            runOnUiThread { stopStream() }
-        }
+        try {
+            if (rtspCamera?.getStreamClient()?.reTry(5000, reason, null) == false)
+                runOnUiThread { stopStream() }
+        } catch (e: Exception) {}
     }
-
     override fun onDisconnect() {
         runOnUiThread { tvStatus.text = "🟡 Desconectado" }
     }
-
     override fun onAuthError() {
         runOnUiThread { tvStatus.text = "❌ Error autenticación" }
     }
-
     override fun onAuthSuccess() {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Capturar crashes no manejados y mostrarlos en pantalla
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            runOnUiThread {
+                tvStatus.text = "💥 ${throwable.javaClass.simpleName}: ${throwable.message}"
+                tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
+                streaming = false
+                btnToggle.text = "Iniciar Stream"
+            }
+        }
+
         setContentView(R.layout.activity_main)
 
         btnToggle     = findViewById(R.id.btnToggle)
@@ -93,38 +100,42 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         seekZoom      = findViewById(R.id.seekZoom)
         tvZoom        = findViewById(R.id.tvZoom)
 
-        rtspCamera = RtspCamera2(this, this)
-        rtspCamera.getStreamClient().setReTries(10)
+        try {
+            rtspCamera = RtspCamera2(this, this)
+            rtspCamera?.getStreamClient()?.setReTries(10)
+            tvStatus.text = "✅ Cámara inicializada"
+        } catch (e: Exception) {
+            tvStatus.text = "❌ Init error: ${e.javaClass.simpleName}: ${e.message}"
+            tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
+        }
 
         setupSpinners()
-
         sensorMgr     = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorMgr.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         btnToggle.setOnClickListener {
             if (streaming) stopStream() else startStream()
         }
-
         btnRotate.setOnClickListener {
             manualRotationOffset = (manualRotationOffset + 90) % 360
         }
-
         btnFlash.setOnClickListener {
-            flashOn = !flashOn
-            if (flashOn) rtspCamera.enableLantern() else rtspCamera.disableLantern()
-            btnFlash.text = if (flashOn) "🔦 Flash ON" else "🔦 Flash OFF"
+            try {
+                flashOn = !flashOn
+                if (flashOn) rtspCamera?.enableLantern() else rtspCamera?.disableLantern()
+                btnFlash.text = if (flashOn) "🔦 Flash ON" else "🔦 Flash OFF"
+            } catch (e: Exception) {
+                tvStatus.text = "❌ Flash: ${e.message}"
+            }
         }
-
         btnAudio.setOnClickListener {
             if (!hasPerm(Manifest.permission.RECORD_AUDIO)) {
-                ActivityCompat.requestPermissions(
-                    this, arrayOf(Manifest.permission.RECORD_AUDIO), 101
-                )
+                ActivityCompat.requestPermissions(this,
+                    arrayOf(Manifest.permission.RECORD_AUDIO), 101)
                 return@setOnClickListener
             }
             toggleAudio()
         }
-
         seekZoom.max = 100
         seekZoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
@@ -139,28 +150,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
     }
 
     private fun setupSpinners() {
-        spinnerQuality.adapter = ArrayAdapter(
-            this,
+        spinnerQuality.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item,
-            resolutions.map { it.first }
-        )
+            resolutions.map { it.first })
         spinnerQuality.setSelection(2)
 
-        spinnerCamera.adapter = ArrayAdapter(
-            this,
+        spinnerCamera.adapter = ArrayAdapter(this,
             android.R.layout.simple_spinner_dropdown_item,
-            listOf("Trasera", "Frontal")
-        )
+            listOf("Trasera", "Frontal"))
 
         spinnerCamera.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
                 isFrontCamera = pos == 1
                 if (!streaming) {
-                    if (rtspCamera.isOnPreview) rtspCamera.stopPreview()
-                    rtspCamera.startPreview(
-                        if (isFrontCamera) CameraHelper.Facing.FRONT
-                        else CameraHelper.Facing.BACK
-                    )
+                    try {
+                        if (rtspCamera?.isOnPreview == true) rtspCamera?.stopPreview()
+                        rtspCamera?.startPreview(
+                            if (isFrontCamera) CameraHelper.Facing.FRONT
+                            else CameraHelper.Facing.BACK)
+                    } catch (e: Exception) {
+                        tvStatus.text = "❌ Preview: ${e.message}"
+                    }
                 }
             }
             override fun onNothingSelected(p: AdapterView<*>?) {}
@@ -168,11 +178,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
     }
 
     private fun startStream() {
+        val cam = rtspCamera ?: run {
+            tvStatus.text = "❌ Cámara no inicializada"
+            return
+        }
         if (!hasPerm(Manifest.permission.CAMERA)) {
             tvStatus.text = "⚠️ Permiso de cámara requerido"
             return
         }
         try {
+            tvStatus.text = "⏳ Preparando..."
+
             val (_, w, h) = resolutions[spinnerQuality.selectedItemPosition]
             val bitrate = when {
                 w >= 3840 -> 20_000_000
@@ -183,27 +199,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             }
             val rot = (deviceRotation + manualRotationOffset) % 360
 
-            var prepared = rtspCamera.prepareVideo(w, h, 30, bitrate, rot)
-            if (!prepared) prepared = rtspCamera.prepareVideo(1280, 720, 30, 3_000_000, rot)
+            tvStatus.text = "⏳ prepareVideo ${w}x${h}..."
+            var prepared = cam.prepareVideo(w, h, 30, bitrate, rot)
             if (!prepared) {
-                tvStatus.text = "❌ No se pudo preparar video"
+                tvStatus.text = "⏳ Fallback 720p..."
+                prepared = cam.prepareVideo(1280, 720, 30, 3_000_000, rot)
+            }
+            if (!prepared) {
+                tvStatus.text = "❌ prepareVideo falló"
                 return
             }
 
-            rtspCamera.disableAudio()
+            cam.disableAudio()
 
-            rtspCamera.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
+            tvStatus.text = "⏳ startStream..."
+            cam.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
 
             val svc = Intent(this, StreamService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                startForegroundService(svc)
-            else
-                startService(svc)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
+            else startService(svc)
 
             val ip = getLocalIp()
             tvUrl.text          = "rtsp://$ip:$RTSP_PORT/stream"
             tvUrl.visibility    = View.VISIBLE
-            tvStatus.text       = "🟡 Iniciando..."
+            tvStatus.text       = "🟡 Iniciando conexión..."
             tvStatus.setTextColor(getColor(android.R.color.holo_orange_light))
             btnToggle.text      = "Detener"
             btnFlash.visibility = View.VISIBLE
@@ -212,14 +231,15 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             streaming = true
 
         } catch (e: Exception) {
-            tvStatus.text = "❌ ${e.message}"
+            tvStatus.text = "❌ ${e.javaClass.simpleName}: ${e.message}"
+            tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
             streaming = false
         }
     }
 
     private fun stopStream() {
         try {
-            if (rtspCamera.isStreaming) rtspCamera.stopStream()
+            if (rtspCamera?.isStreaming == true) rtspCamera?.stopStream()
             stopService(Intent(this, StreamService::class.java))
         } catch (e: Exception) {}
         tvUrl.visibility    = View.GONE
@@ -246,9 +266,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
                 .flatMap { it.inetAddresses.toList() }
                 .firstOrNull { !it.isLoopbackAddress && !it.hostAddress.contains(':') }
                 ?.hostAddress ?: "?.?.?.?"
-        } catch (e: Exception) {
-            "?.?.?.?"
-        }
+        } catch (e: Exception) { "?.?.?.?" }
     }
 
     override fun onResume() {
@@ -300,25 +318,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
     }
 
-    override fun onRequestPermissionsResult(
-        code: Int,
-        perms: Array<out String>,
-        results: IntArray
-    ) {
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, perms, results)
-        if (code == 101 &&
-            results.isNotEmpty() &&
-            results[0] == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (code == 101 && results.isNotEmpty() && results[0] == PackageManager.PERMISSION_GRANTED)
             toggleAudio()
-        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         try {
             if (streaming) stopStream()
-            if (rtspCamera.isOnPreview) rtspCamera.stopPreview()
+            if (rtspCamera?.isOnPreview == true) rtspCamera?.stopPreview()
         } catch (e: Exception) {}
     }
 }
