@@ -1,13 +1,11 @@
 package com.webcam.app
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.*
@@ -75,37 +73,38 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Capturar crashes no manejados y mostrarlos en pantalla
         Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
             runOnUiThread {
-                tvStatus.text = "💥 ${throwable.javaClass.simpleName}: ${throwable.message}"
-                tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
-                streaming = false
-                btnToggle.text = "Iniciar Stream"
+                try {
+                    tvStatus.text = "💥 ${throwable.javaClass.simpleName}: ${throwable.message}"
+                    tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
+                    streaming = false
+                    btnToggle.text = "Iniciar Stream"
+                } catch (e: Exception) {}
             }
         }
 
         setContentView(R.layout.activity_main)
 
-        btnToggle     = findViewById(R.id.btnToggle)
-        btnRotate     = findViewById(R.id.btnRotate)
-        btnFlash      = findViewById(R.id.btnFlash)
-        btnAudio      = findViewById(R.id.btnAudio)
-        tvStatus      = findViewById(R.id.tvStatus)
-        tvUrl         = findViewById(R.id.tvUrl)
-        tvFps         = findViewById(R.id.tvFps)
-        tvOrientation = findViewById(R.id.tvOrientation)
+        btnToggle      = findViewById(R.id.btnToggle)
+        btnRotate      = findViewById(R.id.btnRotate)
+        btnFlash       = findViewById(R.id.btnFlash)
+        btnAudio       = findViewById(R.id.btnAudio)
+        tvStatus       = findViewById(R.id.tvStatus)
+        tvUrl          = findViewById(R.id.tvUrl)
+        tvFps          = findViewById(R.id.tvFps)
+        tvOrientation  = findViewById(R.id.tvOrientation)
         spinnerQuality = findViewById(R.id.spinnerQuality)
         spinnerCamera  = findViewById(R.id.spinnerCamera)
-        seekZoom      = findViewById(R.id.seekZoom)
-        tvZoom        = findViewById(R.id.tvZoom)
+        seekZoom       = findViewById(R.id.seekZoom)
+        tvZoom         = findViewById(R.id.tvZoom)
 
         try {
             rtspCamera = RtspCamera2(this, this)
             rtspCamera?.getStreamClient()?.setReTries(10)
-            tvStatus.text = "✅ Cámara inicializada"
+            tvStatus.text = "✅ Listo"
         } catch (e: Exception) {
-            tvStatus.text = "❌ Init error: ${e.javaClass.simpleName}: ${e.message}"
+            tvStatus.text = "❌ Init: ${e.javaClass.simpleName}: ${e.message}"
             tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
         }
 
@@ -188,7 +187,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
         }
         try {
             tvStatus.text = "⏳ Preparando..."
-
             val (_, w, h) = resolutions[spinnerQuality.selectedItemPosition]
             val bitrate = when {
                 w >= 3840 -> 20_000_000
@@ -198,26 +196,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
                 else      ->  1_500_000
             }
             val rot = (deviceRotation + manualRotationOffset) % 360
-
-            tvStatus.text = "⏳ prepareVideo ${w}x${h}..."
             var prepared = cam.prepareVideo(w, h, 30, bitrate, rot)
-            if (!prepared) {
-                tvStatus.text = "⏳ Fallback 720p..."
-                prepared = cam.prepareVideo(1280, 720, 30, 3_000_000, rot)
-            }
-            if (!prepared) {
-                tvStatus.text = "❌ prepareVideo falló"
-                return
-            }
+            if (!prepared) prepared = cam.prepareVideo(1280, 720, 30, 3_000_000, rot)
+            if (!prepared) { tvStatus.text = "❌ prepareVideo falló"; return }
 
             cam.disableAudio()
-
-            tvStatus.text = "⏳ startStream..."
             cam.startStream("rtsp://0.0.0.0:$RTSP_PORT/stream")
-
-            val svc = Intent(this, StreamService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(svc)
-            else startService(svc)
 
             val ip = getLocalIp()
             tvUrl.text          = "rtsp://$ip:$RTSP_PORT/stream"
@@ -229,7 +213,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
             seekZoom.visibility = View.VISIBLE
             tvZoom.visibility   = View.VISIBLE
             streaming = true
-
         } catch (e: Exception) {
             tvStatus.text = "❌ ${e.javaClass.simpleName}: ${e.message}"
             tvStatus.setTextColor(getColor(android.R.color.holo_red_dark))
@@ -240,7 +223,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
     private fun stopStream() {
         try {
             if (rtspCamera?.isStreaming == true) rtspCamera?.stopStream()
-            stopService(Intent(this, StreamService::class.java))
         } catch (e: Exception) {}
         tvUrl.visibility    = View.GONE
         tvStatus.text       = "🔴 Detenido"
@@ -311,7 +293,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, ConnectChecker {
 
     private fun checkPermissions() {
         val perms = mutableListOf(Manifest.permission.CAMERA)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+        if (Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU)
             perms.add(Manifest.permission.POST_NOTIFICATIONS)
         val missing = perms.filter { !hasPerm(it) }
         if (missing.isNotEmpty())
